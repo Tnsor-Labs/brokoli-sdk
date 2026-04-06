@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brokoli"
+version = "0.2.0"
+description = "Brokoli Python SDK — define data pipelines in Python, run them visually"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/brokoli-data/brokoli-python"
+Documentation = "https://docs.brokoli.dev"
+Repository = "https://github.com/brokoli-data/brokoli-python"
+Issues = "https://github.com/brokoli-data/brokoli-python/issues"
+
+[project.scripts]
+brokoli = "brokoli.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+pandas = ["pandas>=1.5"]
+pyarrow = ["pyarrow>=12.0"]
+
+[tool.setuptools.packages.find]
+include = ["brokoli*"]
