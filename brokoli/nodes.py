@@ -184,15 +184,66 @@ def source_file(
 # ===================================================================
 
 def _parse_transform_rules(rules: list) -> list:
-    """Convert a list of transform rules (strings or dicts) to rule objects."""
+    """Convert a list of transform rules (strings or dicts) to rule objects.
+
+    Validates and normalizes dict rules against the backend's
+    TransformRule schema so schema drift surfaces at Pipeline build
+    time, not at pipeline run time.
+
+    Accepts this shorthand for ergonomic reasons and rewrites it to
+    the canonical shape:
+
+        # rename shorthand
+        {"type": "rename", "from": "ts", "to": "event_time"}
+        #  → {"type": "rename", "mapping": {"ts": "event_time"}}
+
+    Rejects rename shapes with no canonical equivalent so the user
+    sees a clear error immediately instead of "rename_columns
+    requires mapping" at run time from a worker pod log they can't
+    easily reach.
+
+    String rules are passed through as legacy "expression" rules
+    unchanged — several existing tests rely on this shape. Note
+    that these do NOT actually execute on the backend today; that's
+    a separate known issue.
+    """
     parsed: list = []
-    for rule in rules:
+    for i, rule in enumerate(rules):
         if isinstance(rule, str):
+            # Legacy passthrough — the backend doesn't understand this
+            # shape, but tests and older user code construct it.
             parsed.append({"type": "expression", "expression": rule})
             continue
-        if isinstance(rule, dict):
-            parsed.append(dict(rule))
-            continue
+        if not isinstance(rule, dict):
+            raise TypeError(
+                f"transform rule #{i + 1} must be a dict or string, "
+                f"got {type(rule).__name__}. Use e.g. "
+                "{'type': 'rename', 'mapping': {'old': 'new'}}"
+            )
+        rule = dict(rule)  # defensive copy
+        rtype = rule.get("type", "")
+
+        # Rename normalization: accept {from, to} shorthand, convert
+        # to the canonical {mapping: {from: to}} shape the engine
+        # expects. Without this the SDK sends the shorthand straight
+        # through and every rename rule fails at run time with
+        # "rename_columns requires mapping".
+        if rtype in ("rename", "rename_columns"):
+            if "from" in rule and "to" in rule and "mapping" not in rule:
+                rule["mapping"] = {rule.pop("from"): rule.pop("to")}
+            elif "from" in rule or "to" in rule:
+                # Partial shorthand — missing half of the pair.
+                raise ValueError(
+                    f"transform rule #{i + 1} (rename): {{from, to}} shorthand "
+                    "requires both keys; use {'mapping': {old: new}} for the canonical form"
+                )
+            if not isinstance(rule.get("mapping"), dict) or not rule["mapping"]:
+                raise ValueError(
+                    f"transform rule #{i + 1} (rename): requires non-empty 'mapping' "
+                    "dict, e.g. {'type': 'rename', 'mapping': {'old_col': 'new_col'}}"
+                )
+
+        parsed.append(rule)
     return parsed
 
 
@@ -211,10 +262,23 @@ def transform(
                 "Normalize",
                 input=raw,
                 rules=[
-                    "FILTER status != 'deleted'",
-                    {"type": "rename", "from": "ts", "to": "event_time"},
+                    {"type": "filter_rows", "condition": "status != 'deleted'"},
+                    {"type": "rename", "mapping": {"ts": "event_time"}},
                 ],
             )
+
+    Rule types match the backend engine's TransformRule schema:
+
+        rename / rename_columns  -> {"mapping": {"old": "new", ...}}
+        drop_columns             -> {"columns": ["col1", "col2"]}
+        add_column               -> {"name": "x", "expression": "a + b"}
+        filter_rows              -> {"condition": "col > 0"}
+        replace_values           -> {"column": "status", "mapping": {"a": "b"}}
+        sort                     -> {"column": "col", "ascending": true}
+        deduplicate              -> {"columns": ["id"]}  (optional)
+        aggregate                -> {"group_by": ["k"],
+                                     "agg_fields": [{"column": "v",
+                                                     "function": "sum"}]}
     """
     config: dict = {}
     if rules:
