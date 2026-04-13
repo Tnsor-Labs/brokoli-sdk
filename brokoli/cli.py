@@ -178,31 +178,34 @@ def validate_cmd(args: argparse.Namespace) -> None:
     print("All pipelines valid")
 
 
+def _output_pipeline(pipeline: Any, fmt: str) -> str:
+    """Serialize a pipeline to the requested format."""
+    if fmt == "json":
+        return json.dumps(pipeline.to_json(), indent=2)
+    return pipeline.to_yaml()
+
+
 def compile_cmd(args: argparse.Namespace) -> None:
-    """Compile a pipeline file to JSON without deploying."""
-    all_pipelines: list[dict[str, Any]] = []
+    """Compile a pipeline file to YAML (default) or JSON."""
+    fmt = getattr(args, "format", "yaml")
     for f in _collect_files(args.file):
         pipelines = load_pipeline_from_file(str(f))
         for pipeline in pipelines:
-            all_pipelines.append(pipeline.to_json())
-
-    if len(all_pipelines) == 1:
-        print(json.dumps(all_pipelines[0], indent=2))
-    else:
-        print(json.dumps(all_pipelines, indent=2))
+            print(_output_pipeline(pipeline, fmt))
 
 
 def export(args: argparse.Namespace) -> None:
-    """Export pipeline definition as JSON (without deploying)."""
+    """Export pipeline definition as YAML (default) or JSON."""
+    fmt = getattr(args, "format", "yaml")
     pipelines = load_pipeline_from_file(args.file)
     for pipeline in pipelines:
-        payload = pipeline.to_json()
+        output = _output_pipeline(pipeline, fmt)
         if args.output:
             with open(args.output, "w") as f:
-                json.dump(payload, f, indent=2)
+                f.write(output)
             print(f"Exported {pipeline.name} to {args.output}")
         else:
-            print(json.dumps(payload, indent=2))
+            print(output)
 
 
 def main() -> None:
@@ -226,14 +229,16 @@ def main() -> None:
     vp.set_defaults(func=validate_cmd)
 
     # compile
-    cp = sub.add_parser("compile", help="Compile a pipeline file to JSON without deploying")
+    cp = sub.add_parser("compile", help="Compile pipeline to YAML (default) or JSON")
     cp.add_argument("file", help="Python file containing pipeline(s)")
+    cp.add_argument("-f", "--format", choices=["yaml", "json"], default="yaml", help="Output format (default: yaml)")
     cp.set_defaults(func=compile_cmd)
 
     # export
-    ep = sub.add_parser("export", help="Export pipeline as JSON (no deploy)")
+    ep = sub.add_parser("export", help="Export pipeline as YAML (default) or JSON")
     ep.add_argument("file", help="Python file containing pipeline")
-    ep.add_argument("-o", "--output", help="Output JSON file")
+    ep.add_argument("-o", "--output", help="Output file path")
+    ep.add_argument("-f", "--format", choices=["yaml", "json"], default="yaml", help="Output format (default: yaml)")
     ep.set_defaults(func=export)
 
     args = parser.parse_args()

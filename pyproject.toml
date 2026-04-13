@@ -8,6 +8,7 @@ version = "0.2.0"
 description = "Brokoli Python SDK — define data pipelines in Python, run them visually"
 readme = "README.md"
 license = {text = "Apache-2.0"}
+dependencies = ["pyyaml>=6.0"]
 requires-python = ">=3.9"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -23,10 +24,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/brokoli-data/brokoli-python"
-Documentation = "https://docs.brokoli.dev"
-Repository = "https://github.com/brokoli-data/brokoli-python"
-Issues = "https://github.com/brokoli-data/brokoli-python/issues"
+Homepage = "https://brokoli.orkestri.site"
+Documentation = "https://docs.brokoli.orkestri.site"
+Repository = "https://github.com/Tnsor-Labs/brokoli-sdk"
+Issues = "https://github.com/Tnsor-Labs/brokoli-sdk/issues"
 
 [project.scripts]
 brokoli = "brokoli.cli:main"

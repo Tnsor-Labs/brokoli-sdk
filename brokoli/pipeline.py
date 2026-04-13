@@ -752,6 +752,49 @@ class Pipeline:
 
         return result
 
+    def to_yaml(self) -> str:
+        """Convert pipeline to YAML format.
+
+        Produces clean, human-readable YAML without escape sequences.
+        Scripts in code nodes are rendered as YAML block scalars (``|``).
+
+        Example::
+
+            with Pipeline("my-pipeline") as p:
+                source_db("Load", query="SELECT 1", conn_id="pg")
+
+            print(p.to_yaml())
+        """
+        try:
+            import yaml
+        except ImportError:
+            raise ImportError(
+                "PyYAML is required for YAML output. Install it: pip install pyyaml"
+            )
+
+        data = self.to_json()
+
+        # Custom representer: render multi-line strings as block scalars (|)
+        # so scripts, queries, etc. appear clean without \\n escapes.
+        def _str_representer(dumper: yaml.Dumper, value: str) -> yaml.ScalarNode:
+            if "\n" in value:
+                return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|")
+            return dumper.represent_scalar("tag:yaml.org,2002:str", value)
+
+        class _CleanDumper(yaml.Dumper):
+            pass
+
+        _CleanDumper.add_representer(str, _str_representer)
+
+        return yaml.dump(
+            data,
+            Dumper=_CleanDumper,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+            width=120,
+        )
+
     # -- Private helpers ---------------------------------------------------
 
     @staticmethod
