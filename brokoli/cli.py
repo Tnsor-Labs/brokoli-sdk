@@ -130,7 +130,7 @@ def _upsert_pipeline(
 
 def deploy(args: argparse.Namespace) -> None:
     """Deploy pipeline(s) to a Brokoli server."""
-    from brokoli.validate import validate_pipeline
+    from brokoli.validation import validate_pipeline
 
     server = args.server.rstrip("/")
     auth_header = _auth_header_from_args(args)
@@ -157,7 +157,7 @@ def deploy(args: argparse.Namespace) -> None:
 
 def validate_cmd(args: argparse.Namespace) -> None:
     """Validate pipeline(s) without deploying."""
-    from brokoli.validate import validate_pipeline
+    from brokoli.validation import validate_pipeline
 
     server = args.server.rstrip("/")
     auth_header = _auth_header_from_args(args)

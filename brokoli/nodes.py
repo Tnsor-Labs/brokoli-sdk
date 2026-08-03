@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Any
 
 from brokoli.exceptions import ContextError
 from brokoli.parsing import ParseError, parse_quality_rule
 from brokoli.pipeline import Pipeline, NodeRef, _make_id, _MultiRef
+# UNSET is defined in its own module (not here) so brokoli.pipeline can use
+# it too without a circular import; imported here so existing call sites
+# below and ``from brokoli.nodes import UNSET`` keep working unchanged.
+from brokoli.sentinel import UNSET
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +28,7 @@ def _current_pipeline() -> Pipeline:
 def _build_config(base: dict, optional: dict) -> dict:
     """Build a node config dict from required fields and optional overrides.
 
-    Only keys whose values are truthy (non-empty, non-zero) are included
+    Only keys whose values are not UNSET and not None are included
     from *optional*.  Dict values are shallow-copied to prevent caller
     mutation.
 
@@ -37,7 +41,9 @@ def _build_config(base: dict, optional: dict) -> dict:
     """
     config: dict = dict(base)
     for key, value in optional.items():
-        if not value:
+        if value is UNSET:
+            continue
+        if value is None:
             continue
         if isinstance(value, dict):
             config[key] = dict(value)
@@ -93,11 +99,11 @@ def _input_args(input: Optional[NodeRef]) -> tuple[NodeRef, ...]:
 def source_db(
     name: str,
     query: str = "",
-    conn_id: str = "",
-    uri: str = "",
-    retries: int = 0,
+    conn_id: Any = UNSET,
+    uri: Any = UNSET,
+    retries: Any = UNSET,
     retry_backoff: str = "exponential",
-    timeout: int = 0,
+    timeout: Any = UNSET,
 ) -> NodeRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
@@ -115,10 +121,10 @@ def source_db(
         "conn_id": conn_id,
         "uri": uri,
     }
-    if retries > 0:
+    if retries is not UNSET and retries is not None:
         optional["max_retries"] = retries
         optional["retry_backoff"] = retry_backoff
-    if timeout > 0:
+    if timeout is not UNSET and timeout is not None:
         optional["timeout"] = timeout
 
     config = _build_config({"query": query}, optional)
@@ -129,12 +135,12 @@ def source_api(
     name: str,
     url: str = "",
     method: str = "GET",
-    headers: dict | None = None,
-    body: str = "",
-    conn_id: str = "",
-    retries: int = 0,
+    headers: Any = UNSET,
+    body: Any = UNSET,
+    conn_id: Any = UNSET,
+    retries: Any = UNSET,
     retry_backoff: str = "exponential",
-    timeout: int = 30,
+    timeout: Any = UNSET,
 ) -> NodeRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -149,14 +155,14 @@ def source_api(
             )
     """
     optional: dict = {
-        "headers": dict(headers) if headers else {},
+        "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
         "body": body,
         "conn_id": conn_id,
     }
-    if retries > 0:
+    if retries is not UNSET and retries is not None:
         optional["max_retries"] = retries
         optional["retry_backoff"] = retry_backoff
-    if timeout:
+    if timeout is not UNSET and timeout is not None:
         optional["timeout"] = timeout
 
     config = _build_config({"url": url, "method": method}, optional)
@@ -374,7 +380,7 @@ def code(
     input: Optional[NodeRef] = None,
     language: str = "python",
     script: str = "",
-    python_path: str = "",
+    python_path: Any = UNSET,
 ) -> NodeRef:
     """Custom code node -- run Python (or other) scripts.
 
@@ -405,9 +411,9 @@ def sink_db(
     input: Optional[NodeRef] = None,
     table: str = "",
     mode: str = "append",
-    conn_id: str = "",
-    uri: str = "",
-    retries: int = 0,
+    conn_id: Any = UNSET,
+    uri: Any = UNSET,
+    retries: Any = UNSET,
 ) -> NodeRef:
     """Database sink -- write data to a table.
 
@@ -422,7 +428,7 @@ def sink_db(
         "conn_id": conn_id,
         "uri": uri,
     }
-    if retries > 0:
+    if retries is not UNSET and retries is not None:
         optional["max_retries"] = retries
 
     config = _build_config({"table": table, "mode": mode}, optional)
@@ -434,7 +440,7 @@ def sink_file(
     input: Optional[NodeRef] = None,
     path: str = "",
     format: str = "csv",
-    compress: str = "",
+    compress: Any = UNSET,
 ) -> NodeRef:
     """File sink -- write data to CSV, JSON, Parquet, etc.
 
@@ -457,8 +463,8 @@ def sink_api(
     input: Optional[NodeRef] = None,
     url: str = "",
     method: str = "POST",
-    body: str = "",
-    headers: dict | None = None,
+    body: Any = UNSET,
+    headers: Any = UNSET,
 ) -> NodeRef:
     """API sink -- send data to an HTTP endpoint.
 
@@ -472,7 +478,7 @@ def sink_api(
     """
     optional: dict = {
         "body_template": body,
-        "headers": dict(headers) if headers else {},
+        "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
     }
     config = _build_config({"url": url, "method": method}, optional)
     return _register_node("sink_api", name, config, *_input_args(input))
@@ -489,8 +495,8 @@ def migrate(
     query: str = "",
     table: str = "",
     mode: str = "append",
-    source_conn_id: str = "",
-    target_conn_id: str = "",
+    source_conn_id: Any = UNSET,
+    target_conn_id: Any = UNSET,
 ) -> NodeRef:
     """Database migration -- copy data between two databases.
 
@@ -521,11 +527,11 @@ def migrate(
 def dbt(
     name: str,
     command: str = "run",
-    project_dir: str = "",
-    target: str = "",
-    select: str = "",
-    profiles_dir: str = "",
-    vars: str = "",
+    project_dir: Any = UNSET,
+    target: Any = UNSET,
+    select: Any = UNSET,
+    profiles_dir: Any = UNSET,
+    vars: Any = UNSET,
     input: Optional[NodeRef] = None,
 ) -> NodeRef:
     """Run dbt commands -- run, test, build, seed, snapshot.
@@ -559,8 +565,8 @@ def notify(
     input: Optional[NodeRef] = None,
     notify_type: str = "webhook",
     webhook_url: str = "",
-    message: str = "",
-    channel: str = "",
+    message: Any = UNSET,
+    channel: Any = UNSET,
 ) -> NodeRef:
     """Send a notification -- Slack, webhook, or email.
 

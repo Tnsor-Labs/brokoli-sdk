@@ -199,19 +199,36 @@ def validate_pipeline(
     # Node validation
     node_ids: set[str] = {n["id"] for n in data["nodes"]}
     seen_names: set[str] = set()
+    has_source = False
 
     for node in data["nodes"]:
         name: str = node["name"]
         ntype: str = node["type"]
         config: dict[str, Any] = node.get("config", {})
+        capabilities: list[str] = node.get("capabilities", [])
+
+        if "source" in capabilities:
+            has_source = True
 
         if name in seen_names:
             result.add_warning(name, "name", "Duplicate node name (also used by another node)")
         seen_names.add(name)
 
+        # Config validation stays dispatched by exact node type -- each
+        # type has its own required-field shape. Only the "does this
+        # pipeline have a source" question below is answered generically
+        # via the capability model, so that dbt/migrate and any
+        # @source-decorated node are recognized as sources without
+        # hardcoding their type strings here.
         validator = _NODE_VALIDATORS.get(ntype)
         if validator is not None:
             validator(name, config, result)
+
+    if not has_source:
+        result.add_warning(
+            "", "capabilities",
+            "Pipeline has no source node — nothing produces data for downstream nodes to consume",
+        )
 
     # Edge validation
     for edge in data.get("edges", []):

@@ -9,6 +9,7 @@ import textwrap
 from typing import Any, Callable, Optional
 
 from brokoli.exceptions import PipelineError
+from brokoli.sentinel import UNSET
 
 # --- Layout constants ---
 LAYOUT_X_GAP: int = 280
@@ -16,6 +17,49 @@ LAYOUT_Y_GAP: int = 100
 LAYOUT_X_ORIGIN: int = 50
 LAYOUT_Y_CENTER: int = 200
 LAYOUT_Y_MIN: int = 50
+
+# --- IR version ---
+# Bumped whenever the shape of the serialized pipeline JSON changes in a
+# way consumers (the Go backend, the UI) need to know about -- e.g. the
+# addition of the ``capabilities`` field on nodes.
+IR_VERSION: str = "2.0"
+
+# --- Capability model ---
+#
+# Every node carries a ``capabilities`` list describing the role it plays
+# in the DAG, independent of its literal ``type`` string. Code that needs
+# to answer a question like "is this a source" should check capability
+# membership (``"source" in node["capabilities"]``) rather than hardcoding
+# a list of type strings -- that keeps decorator-based nodes (which are
+# always registered with the literal type ``"code"``) and any future
+# built-in node types correctly included without further edits.
+#
+# This is the single source of truth for the type -> capabilities mapping;
+# nothing else in the SDK should hardcode this list.
+NODE_TYPE_CAPABILITIES: dict[str, list[str]] = {
+    "source_file": ["source", "dataset-output"],
+    "source_api": ["source", "dataset-output"],
+    "source_db": ["source", "dataset-output"],
+    # dbt/migrate produce a dataset for downstream nodes to consume, same
+    # as the Go backend's validator already treats them.
+    "dbt": ["source", "dataset-output"],
+    "migrate": ["source", "dataset-output"],
+    "sink_db": ["sink"],
+    "sink_file": ["sink"],
+    "sink_api": ["sink"],
+}
+DEFAULT_CAPABILITIES: tuple[str, ...] = ("compute",)
+
+
+def _capabilities_for(node_type: str) -> list[str]:
+    """Return the default capabilities for *node_type* (a defensive copy).
+
+    Decorator-based nodes (``@source``, ``@sink``, ...) are always
+    registered with the literal type ``"code"``, so they pass an explicit
+    ``capabilities`` override to :meth:`Pipeline._add_node` instead of
+    relying on this lookup.
+    """
+    return list(NODE_TYPE_CAPABILITIES.get(node_type, DEFAULT_CAPABILITIES))
 
 # --- Code-gen templates ---
 
@@ -138,7 +182,7 @@ SENSOR_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     while True:
         if {func_name}():
             break
-        if time.time() - _start > _timeout:
+        if _timeout is not None and time.time() - _start > _timeout:
             raise TimeoutError("Sensor '{func_name}' timed out after {{_timeout}}s")
         time.sleep(_poll_interval)
     output_data = {{"columns": columns, "rows": rows}}
@@ -309,9 +353,19 @@ class _TaskWrapper:
         self._config = config
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        # Cache of the node created by the zero-arg "auto-call" path (used
+        # by ``_resolve``/chaining), so reusing this wrapper instance across
+        # multiple fan-out edges doesn't register a duplicate node. Explicit
+        # calls with inputs (e.g. calling the same @task twice with
+        # different upstream data) always create a fresh node and never
+        # populate or consult this cache.
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self, *inputs: NodeRef) -> NodeRef:
         """Register this task as a node with edges from *inputs*."""
+        if not inputs and self._auto_ref is not None:
+            return self._auto_ref
+
         func_source = _extract_func_source(self._func)
 
         call_script = TASK_WRAPPER_TEMPLATE.format(
@@ -332,7 +386,10 @@ class _TaskWrapper:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
 
-        return NodeRef(node_id, self._pipeline)
+        ref = NodeRef(node_id, self._pipeline)
+        if not inputs:
+            self._auto_ref = ref
+        return ref
 
     def __rshift__(self, other: Any) -> NodeRef | _MultiRef:
         """``extract >> task_func`` -- auto-call with no explicit input."""
@@ -433,14 +490,22 @@ class _SourceWrapper:
         self._config = config
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        # Sources take no input, so every call is an "auto-call" -- cache
+        # unconditionally to avoid registering a duplicate node when the
+        # same wrapper instance is reused across multiple fan-out edges.
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self) -> NodeRef:
+        if self._auto_ref is not None:
+            return self._auto_ref
         func_source = _extract_func_source(self._func)
         script = SOURCE_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
         node_id = _make_id(self._name)
-        self._pipeline._add_node(node_id, "code", self._name, config)
-        return NodeRef(node_id, self._pipeline)
+        self._pipeline._add_node(node_id, "code", self._name, config, capabilities=["source", "dataset-output"])
+        ref = NodeRef(node_id, self._pipeline)
+        self._auto_ref = ref
+        return ref
 
     def __rshift__(self, other: Any) -> NodeRef | _MultiRef:
         return self() >> other
@@ -456,17 +521,23 @@ class _SinkWrapper:
         self._config = config
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self, *inputs: NodeRef) -> NodeRef:
+        if not inputs and self._auto_ref is not None:
+            return self._auto_ref
         func_source = _extract_func_source(self._func)
         script = SINK_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
         node_id = _make_id(self._name)
-        self._pipeline._add_node(node_id, "code", self._name, config)
+        self._pipeline._add_node(node_id, "code", self._name, config, capabilities=["sink"])
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
-        return NodeRef(node_id, self._pipeline)
+        ref = NodeRef(node_id, self._pipeline)
+        if not inputs:
+            self._auto_ref = ref
+        return ref
 
     def __rrshift__(self, other: Any) -> NodeRef:
         if isinstance(other, NodeRef):
@@ -483,8 +554,11 @@ class _FilterWrapper:
         self._pipeline = pipeline
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self, *inputs: NodeRef) -> NodeRef:
+        if not inputs and self._auto_ref is not None:
+            return self._auto_ref
         func_source = _extract_func_source(self._func)
         script = FILTER_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
@@ -493,7 +567,10 @@ class _FilterWrapper:
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
-        return NodeRef(node_id, self._pipeline)
+        ref = NodeRef(node_id, self._pipeline)
+        if not inputs:
+            self._auto_ref = ref
+        return ref
 
     def __rrshift__(self, other: Any) -> NodeRef:
         if isinstance(other, NodeRef):
@@ -510,8 +587,11 @@ class _MapWrapper:
         self._pipeline = pipeline
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self, *inputs: NodeRef) -> NodeRef:
+        if not inputs and self._auto_ref is not None:
+            return self._auto_ref
         func_source = _extract_func_source(self._func)
         script = MAP_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
@@ -520,7 +600,10 @@ class _MapWrapper:
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
-        return NodeRef(node_id, self._pipeline)
+        ref = NodeRef(node_id, self._pipeline)
+        if not inputs:
+            self._auto_ref = ref
+        return ref
 
     def __rrshift__(self, other: Any) -> NodeRef:
         if isinstance(other, NodeRef):
@@ -538,8 +621,11 @@ class _ValidateWrapper:
         self._on_failure = on_failure
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self, *inputs: NodeRef) -> NodeRef:
+        if not inputs and self._auto_ref is not None:
+            return self._auto_ref
         func_source = _extract_func_source(self._func)
         action = 'raise ValueError(f"Validation failed: {_message}")' if self._on_failure == "block" else ""
         script = VALIDATE_WRAPPER_TEMPLATE.format(
@@ -553,7 +639,10 @@ class _ValidateWrapper:
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
-        return NodeRef(node_id, self._pipeline)
+        ref = NodeRef(node_id, self._pipeline)
+        if not inputs:
+            self._auto_ref = ref
+        return ref
 
     def __rrshift__(self, other: Any) -> NodeRef:
         if isinstance(other, NodeRef):
@@ -564,7 +653,7 @@ class _ValidateWrapper:
 class _SensorWrapper:
     """Wraps a ``@sensor`` decorated function. Polls until the function returns True."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline", poll_interval: int, timeout: int) -> None:
+    def __init__(self, func: Callable, name: str, pipeline: "Pipeline", poll_interval: int, timeout: Any) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
@@ -572,22 +661,36 @@ class _SensorWrapper:
         self._timeout = timeout
         self.__wrapped__ = func
         self.__name__ = func.__name__
+        self._auto_ref: Optional[NodeRef] = None
 
     def __call__(self, *inputs: NodeRef) -> NodeRef:
+        if not inputs and self._auto_ref is not None:
+            return self._auto_ref
         func_source = _extract_func_source(self._func)
+        # An explicit UNSET/None timeout means "poll forever" -- the
+        # generated script skips its timeout check, and the node's
+        # orchestrator-level ``timeout`` config key (poll timeout + a 60s
+        # buffer for the last poll/teardown) is omitted entirely rather
+        # than always adding 60 to whatever value was passed.
+        has_timeout = self._timeout is not UNSET and self._timeout is not None
         script = SENSOR_WRAPPER_TEMPLATE.format(
             func_source=func_source,
             func_name=self._func.__name__,
             poll_interval=self._poll_interval,
-            timeout=self._timeout,
+            timeout=repr(self._timeout) if has_timeout else "None",
         )
-        config: dict[str, Any] = {"language": "python", "script": script, "timeout": self._timeout + 60}
+        config: dict[str, Any] = {"language": "python", "script": script}
+        if has_timeout:
+            config["timeout"] = self._timeout + 60
         node_id = _make_id(self._name)
         self._pipeline._add_node(node_id, "code", self._name, config)
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
-        return NodeRef(node_id, self._pipeline)
+        ref = NodeRef(node_id, self._pipeline)
+        if not inputs:
+            self._auto_ref = ref
+        return ref
 
     def __rshift__(self, other: Any) -> NodeRef | _MultiRef:
         return self() >> other
@@ -689,7 +792,16 @@ class Pipeline:
         node_type: str,
         name: str,
         config: dict[str, Any],
+        capabilities: list[str] | None = None,
     ) -> None:
+        """Register a node.
+
+        *capabilities* defaults to the lookup in ``NODE_TYPE_CAPABILITIES``
+        for *node_type*. Callers that register decorator-based nodes (which
+        always use the literal type ``"code"``) pass an explicit override
+        so the capability reflects the decorator (``@source``, ``@sink``,
+        ...) rather than the generic code-node default.
+        """
         if node_id in self._nodes:
             raise PipelineError(
                 f"Duplicate node id {node_id!r} (name={name!r}). "
@@ -700,6 +812,7 @@ class Pipeline:
             "type": node_type,
             "name": name,
             "config": config,
+            "capabilities": list(capabilities) if capabilities is not None else _capabilities_for(node_type),
         }
         self._node_order.append(node_id)
 
@@ -722,6 +835,7 @@ class Pipeline:
                 "type": node["type"],
                 "name": node["name"],
                 "config": node["config"],
+                "capabilities": list(node.get("capabilities") or _capabilities_for(node["type"])),
                 "position": positions.get(nid, {"x": 0, "y": 0}),
             }
             self._annotate_schema_hint(node, node_data)
@@ -733,6 +847,7 @@ class Pipeline:
             "description": self.description,
             "schedule": self.schedule,
             "enabled": True,
+            "ir_version": IR_VERSION,
             "nodes": nodes,
             "edges": [{"from": f, "to": t} for f, t in self._edges],
             "tags": self.tags,
@@ -803,6 +918,8 @@ class Pipeline:
         node_data: dict[str, Any],
     ) -> None:
         """Add ``_schema_hint`` to source nodes for downstream inference."""
+        if "source" not in node.get("capabilities", ()):
+            return
         if node["type"] == "source_db" and "query" in node["config"]:
             node_data["config"]["_schema_hint"] = "query_result"
             return
