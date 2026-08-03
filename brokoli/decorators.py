@@ -14,7 +14,7 @@ Available decorators::
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from brokoli.pipeline import (
     Pipeline,
@@ -27,6 +27,7 @@ from brokoli.pipeline import (
     _TaskWrapper,
     _ValidateWrapper,
 )
+from brokoli.sentinel import UNSET
 
 
 # ---------------------------------------------------------------------------
@@ -37,9 +38,9 @@ def task(
     name_or_func: str | Callable | None = None,
     *,
     name: str = "",
-    retries: int = 0,
+    retries: Any = UNSET,
     retry_backoff: str = "exponential",
-    timeout: int = 0,
+    timeout: Any = UNSET,
     on_success: Optional[Callable] = None,
     on_failure: Optional[str | Callable] = None,
 ) -> _TaskWrapper | Callable:
@@ -61,10 +62,10 @@ def task(
             return rows
     """
     config: dict = {}
-    if retries > 0:
+    if retries is not UNSET and retries is not None:
         config["max_retries"] = retries
         config["retry_backoff"] = retry_backoff
-    if timeout > 0:
+    if timeout is not UNSET and timeout is not None:
         config["timeout"] = timeout
     if on_failure == "skip":
         config["on_failure"] = "skip"
@@ -124,8 +125,8 @@ def source(
     name_or_func: str | Callable | None = None,
     *,
     name: str = "",
-    retries: int = 0,
-    timeout: int = 0,
+    retries: Any = UNSET,
+    timeout: Any = UNSET,
 ) -> _SourceWrapper | Callable:
     """Wrap a function as a custom data source (no input, returns rows).
 
@@ -144,9 +145,9 @@ def source(
             return requests.get("https://api.github.com/events").json()
     """
     config: dict = {}
-    if retries > 0:
+    if retries is not UNSET and retries is not None:
         config["max_retries"] = retries
-    if timeout > 0:
+    if timeout is not UNSET and timeout is not None:
         config["timeout"] = timeout
 
     def decorator(func: Callable) -> _SourceWrapper:
@@ -169,8 +170,8 @@ def sink(
     name_or_func: str | Callable | None = None,
     *,
     name: str = "",
-    retries: int = 0,
-    timeout: int = 0,
+    retries: Any = UNSET,
+    timeout: Any = UNSET,
 ) -> _SinkWrapper | Callable:
     """Wrap a function as a custom data sink (takes rows, writes somewhere).
 
@@ -193,9 +194,9 @@ def sink(
             s3.put_object(Bucket="lake", Key="data.json", Body=json.dumps(rows))
     """
     config: dict = {}
-    if retries > 0:
+    if retries is not UNSET and retries is not None:
         config["max_retries"] = retries
-    if timeout > 0:
+    if timeout is not UNSET and timeout is not None:
         config["timeout"] = timeout
 
     def decorator(func: Callable) -> _SinkWrapper:
@@ -329,12 +330,13 @@ def sensor(
     *,
     name: str = "",
     poll_interval: int = 60,
-    timeout: int = 3600,
+    timeout: Any = 3600,
 ) -> _SensorWrapper | Callable:
     """Wrap a function as a sensor that polls until ready.
 
     The function takes no arguments and returns ``True`` when the condition is met.
     The node will poll at ``poll_interval`` seconds and fail after ``timeout`` seconds.
+    Pass ``timeout=None`` for a sensor that polls indefinitely (no timeout).
 
     Example::
 

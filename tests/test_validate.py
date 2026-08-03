@@ -5,7 +5,7 @@ from brokoli import Pipeline, task, condition
 from brokoli import source_db, source_api, source_file
 from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
-from brokoli.validate import validate_pipeline
+from brokoli.validation import validate_pipeline
 
 
 class TestValidateSourceDB:
