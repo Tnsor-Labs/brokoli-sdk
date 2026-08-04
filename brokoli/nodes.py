@@ -7,7 +7,11 @@ from typing import Optional, Any
 from brokoli.exceptions import ContextError
 from brokoli.pagination import PaginationStrategy
 from brokoli.parsing import ParseError, parse_quality_rule
-from brokoli.pipeline import Pipeline, NodeRef, _make_id, _MultiRef
+from brokoli.pipeline import (
+    Pipeline, NodeRef, _make_id, _MultiRef,
+    ArtifactRef, DatasetRef, ScalarRef,
+    _build_union_node,
+)
 # UNSET is defined in its own module (not here) so brokoli.pipeline can use
 # it too without a circular import; imported here so existing call sites
 # below and ``from brokoli.nodes import UNSET`` keep working unchanged.
@@ -60,6 +64,7 @@ def _register_node(
     name: str,
     config: dict,
     *inputs: NodeRef,
+    ref_cls: type = NodeRef,
 ) -> NodeRef:
     """Register a node in the current pipeline and connect inputs.
 
@@ -68,9 +73,14 @@ def _register_node(
         name: Human-readable node name.
         config: Node configuration dict.
         *inputs: Upstream ``NodeRef`` objects to connect as edges.
+        ref_cls: The ``NodeRef`` subclass to return (see
+            ``brokoli.pipeline``'s typed refs -- ``ScalarRef``,
+            ``ArtifactRef``, ``DatasetRef``, ``CollectionRef``). Defaults
+            to plain ``NodeRef`` for node kinds where none of the typed
+            refs cleanly apply.
 
     Returns:
-        A ``NodeRef`` pointing to the newly registered node.
+        A ``ref_cls`` instance pointing to the newly registered node.
 
     Raises:
         ContextError: If no pipeline context is active.
@@ -83,7 +93,7 @@ def _register_node(
         if isinstance(inp, NodeRef):
             pipeline._add_edge(inp.node_id, node_id)
 
-    return NodeRef(node_id, pipeline)
+    return ref_cls(node_id, pipeline)
 
 
 def _input_args(input: Optional[NodeRef]) -> tuple[NodeRef, ...]:
@@ -105,7 +115,7 @@ def source_db(
     retries: Any = UNSET,
     retry_backoff: str = "exponential",
     timeout: Any = UNSET,
-) -> NodeRef:
+) -> DatasetRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
     Example::
@@ -129,7 +139,7 @@ def source_db(
         optional["timeout"] = timeout
 
     config = _build_config({"query": query}, optional)
-    return _register_node("source_db", name, config)
+    return _register_node("source_db", name, config, ref_cls=DatasetRef)
 
 
 def source_api(
@@ -147,7 +157,7 @@ def source_api(
     records: Any = UNSET,
     value_path: Any = UNSET,
     pagination: Any = UNSET,
-) -> NodeRef:
+) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
     Example::
@@ -177,10 +187,13 @@ def source_api(
     contract is never ambiguous:
 
     - ``"dataset"`` (default): the body is, or contains via ``records``,
-      a list of records forming a tabular dataset.
+      a list of records forming a tabular dataset. Returns a
+      :class:`~brokoli.pipeline.DatasetRef`.
     - ``"scalar"``: the body contains a single value at ``value_path``.
+      Returns a :class:`~brokoli.pipeline.ScalarRef`.
     - ``"artifact"``: the raw response is stored as an opaque artifact
       (e.g. a file/binary download); no record extraction happens.
+      Returns an :class:`~brokoli.pipeline.ArtifactRef`.
 
     ``records`` is a dot-path into the JSON body pointing at the list of
     records to extract for ``response="dataset"`` (e.g. ``"results"``,
@@ -251,14 +264,19 @@ def source_api(
             )
 
     config = _build_config({"url": url, "method": method, "response": response}, optional)
-    return _register_node("source_api", name, config)
+    ref_cls = {
+        "dataset": DatasetRef,
+        "scalar": ScalarRef,
+        "artifact": ArtifactRef,
+    }.get(response, DatasetRef)
+    return _register_node("source_api", name, config, ref_cls=ref_cls)
 
 
 def source_file(
     name: str,
     path: str = "",
     format: str = "csv",
-) -> NodeRef:
+) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
 
     Example::
@@ -267,7 +285,7 @@ def source_file(
             data = source_file("Read users", path="/data/users.csv", format="csv")
     """
     config = _build_config({"path": path, "format": format}, {})
-    return _register_node("source_file", name, config)
+    return _register_node("source_file", name, config, ref_cls=DatasetRef)
 
 
 # ===================================================================
@@ -342,7 +360,7 @@ def transform(
     name: str,
     input: Optional[NodeRef] = None,
     rules: list | None = None,
-) -> NodeRef:
+) -> DatasetRef:
     """Transform data -- filter, sort, rename, aggregate, deduplicate.
 
     Example::
@@ -375,7 +393,7 @@ def transform(
     if rules:
         config["rules"] = _parse_transform_rules(list(rules))
 
-    return _register_node("transform", name, config, *_input_args(input))
+    return _register_node("transform", name, config, *_input_args(input), ref_cls=DatasetRef)
 
 
 def join(
@@ -384,7 +402,7 @@ def join(
     right: Optional[NodeRef] = None,
     on: str = "",
     how: str = "inner",
-) -> NodeRef:
+) -> DatasetRef:
     """Join two datasets -- inner, left, right, or full.
 
     Example::
@@ -410,7 +428,7 @@ def join(
         args.append(left)
     if right is not None:
         args.append(right)
-    return _register_node("join", name, config, *args)
+    return _register_node("join", name, config, *args, ref_cls=DatasetRef)
 
 
 def _parse_quality_rules(rules: list) -> list:
@@ -582,7 +600,7 @@ def migrate(
     mode: str = "append",
     source_conn_id: Any = UNSET,
     target_conn_id: Any = UNSET,
-) -> NodeRef:
+) -> DatasetRef:
     """Database migration -- copy data between two databases.
 
     Example::
@@ -606,7 +624,7 @@ def migrate(
             "dest_conn_id": target_conn_id,
         },
     )
-    return _register_node("migrate", name, config)
+    return _register_node("migrate", name, config, ref_cls=DatasetRef)
 
 
 def dbt(
@@ -618,7 +636,7 @@ def dbt(
     profiles_dir: Any = UNSET,
     vars: Any = UNSET,
     input: Optional[NodeRef] = None,
-) -> NodeRef:
+) -> DatasetRef:
     """Run dbt commands -- run, test, build, seed, snapshot.
 
     Example::
@@ -642,7 +660,7 @@ def dbt(
             "vars": vars,
         },
     )
-    return _register_node("dbt", name, config, *_input_args(input))
+    return _register_node("dbt", name, config, *_input_args(input), ref_cls=DatasetRef)
 
 
 def notify(
@@ -713,3 +731,32 @@ def parallel(*nodes: NodeRef) -> _MultiRef | NodeRef:
     if pipeline is not None:
         return _MultiRef(refs, pipeline)
     return refs[0] if refs else nodes[0]
+
+
+def union(name: str, *refs: NodeRef) -> DatasetRef:
+    """Combine multiple dataset/collection refs' manifests into one dataset.
+
+    Compiles to a single ``union`` IR node (capabilities: ``compute``,
+    ``dataset-output``) with an edge from each of *refs*, rather than a
+    chain of individual merge edges.
+
+    Equivalent, for a single upstream dynamic collection, to
+    ``collection_ref.collect(mode="union")``
+    (:meth:`brokoli.pipeline.CollectionRef.collect`) -- both compile to
+    the same node type/capabilities/config, just with a different edge
+    count (one edge per explicit ref here, vs. one edge from the
+    collection there).
+
+    Example::
+
+        combined = union("Combine Pages", page_a, page_b, page_c)
+
+    Note:
+        SDK API surface and IR compilation only -- there is no backend
+        support yet for actually combining dataset manifests at run time
+        (brokoli-sdk#2).
+    """
+    if not refs:
+        raise ValueError("union() requires at least one ref to combine")
+    pipeline = _current_pipeline()
+    return _build_union_node(pipeline, name, list(refs))

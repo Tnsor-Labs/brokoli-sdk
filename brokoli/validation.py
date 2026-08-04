@@ -137,6 +137,32 @@ def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) 
     if not config.get("script"):
         result.add_error(name, "script", "Code node requires a 'script'")
 
+    # ``.expand()`` (brokoli-sdk#2) attaches an "expansion" policy block
+    # to an otherwise-ordinary "code" node instead of introducing a new
+    # node type -- validate its shape here alongside the rest of "code".
+    expansion = config.get("expansion")
+    if expansion is not None and not expansion.get("over"):
+        result.add_error(
+            name, "expansion",
+            "expand() requires at least one keyword mapping a task "
+            "parameter to a CollectionRef, e.g. .expand(file=files)",
+        )
+
+
+def _validate_union(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+    if config.get("mode") != "union":
+        result.add_error(
+            name, "mode",
+            f"Union node currently only supports mode='union', got {config.get('mode')!r}",
+        )
+
+
+def _validate_dataset_transform(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+    """Shared validator for the ``dataset_map``/``dataset_filter`` partition-transform nodes."""
+    function = config.get("function")
+    if not isinstance(function, dict) or not function.get("name"):
+        result.add_error(name, "function", "requires a function reference with a 'name'")
+
 
 def _validate_condition(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("expression") and not config.get("script"):
@@ -208,6 +234,9 @@ _NODE_VALIDATORS: dict[str, Callable[[str, dict[str, Any], ValidationResult], No
     "dbt": _validate_dbt,
     "notify": _validate_notify,
     "migrate": _validate_migrate,
+    "union": _validate_union,
+    "dataset_map": _validate_dataset_transform,
+    "dataset_filter": _validate_dataset_transform,
 }
 
 

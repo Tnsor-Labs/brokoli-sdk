@@ -128,6 +128,99 @@ joined = join("Merge", a, b, on="id")
 source >> [branch_a, branch_b] >> merge >> output
 ```
 
+### Typed References & Dynamic Expansion
+
+> **Scope note:** everything in this section is SDK API surface and IR
+> compilation only. There's no backend support yet for actually
+> scheduling dynamic per-item task instances, combining dataset
+> manifests, or running partition transforms — the primitives below let
+> you author and validate the IR shape today; execution is
+> physical-planner work that hasn't landed yet.
+
+Node-building functions return one of four typed references (all are
+`NodeRef` subclasses, so `>>`, fan-out/fan-in, and everything else above
+keeps working unchanged):
+
+- **`DatasetRef`** — a tabular dataset (rows). Returned by `source_db`,
+  `source_file`, `source_api(..., response="dataset")` (the default),
+  `transform`, `join`, `migrate`, `dbt`.
+- **`ScalarRef`** — a single value. Returned by
+  `source_api(..., response="scalar")`.
+- **`ArtifactRef`** — an opaque file/binary blob. Returned by
+  `source_api(..., response="artifact")`.
+- **`CollectionRef`** — a dynamic collection of items whose size isn't
+  known until the pipeline runs (e.g. one entry per file/page). Not
+  returned by any built-in source yet — only produced by
+  `@task.expand()` below.
+
+Sinks, `quality_check`, `code`, `notify`, and `condition_node` keep
+returning a plain `NodeRef` — their output shape is either a
+side-effect/gate or genuinely ambiguous (a `code` node can produce
+anything), so they aren't force-fit into one of the four typed kinds.
+
+#### `.expand()` — dynamic fan-out
+
+`a >> [b, c]` fans a node out to a fixed, Python-source-literal list of
+destinations. `.expand()` does the same thing driven by *runtime* data —
+one dynamic task instance per item of an upstream `CollectionRef` —
+compiling to a **single** IR node with an `expansion` policy block, not N
+static nodes:
+
+```python
+@task("Parse File")
+def parse(rows):
+    ...
+
+# `files` is a CollectionRef (e.g. from a future paginated/listing source)
+parsed = parse.expand(file=files, key=lambda f: f["path"])
+```
+
+`key=` is optional and gives each dynamic instance a stable identity
+across re-runs. It's never executed locally or turned into a runnable
+script — only a name/description reference is recorded; the real per-item
+keying happens server-side once backend support for dynamic instances
+exists. `.expand()` returns a `CollectionRef` (the dynamic collection of
+per-instance outputs) — chain `.collect(mode="union")` on it to merge
+results back into one dataset.
+
+#### `union()` / `.collect(mode="union")` — combine into one dataset
+
+Both compile to the same `union` IR node (capabilities `compute`,
+`dataset-output`) — a dedicated dataset-manifest-combination node, not a
+chain of individual merge edges:
+
+```python
+from brokoli import union
+
+# Explicit refs known at authoring time
+combined = union("Combine Pages", page_a, page_b, page_c)
+
+# Equivalent, for a single upstream dynamic collection:
+combined = parsed.collect(mode="union")
+```
+
+#### `DatasetRef.map()` / `.filter()` vs. `@map` / `@filter`
+
+Two similar-looking styles exist on purpose, for different jobs — pick
+based on whether you want something that actually runs today:
+
+| | `@map` / `@filter` decorators | `DatasetRef.map()` / `.filter()` |
+|---|---|---|
+| Executes today? | **Yes** — generates a runnable script, registers a `code` node | **No** — IR only; the function is recorded as a name reference |
+| Operates on | The whole node output at once (a list of row dicts) | Conceptually, one partition at a time (RFC §12.1) |
+| Node type | `code` | `dataset_map` / `dataset_filter` |
+
+```python
+@map("Enrich")            # runs today, whole-output
+def enrich(row): ...
+
+data.map(enrich_partition)  # IR-only, per-partition (no backend support yet)
+```
+
+Use `@map`/`@filter` for anything you need to actually run right now. Use
+`DatasetRef.map()`/`.filter()` only when you're deliberately describing a
+future per-partition transform ahead of backend support.
+
 ### Quality Rules
 
 String-based quality rules — no boilerplate:
