@@ -96,6 +96,51 @@ result = compute(input_data)
 - Imports inside functions are fine — only needed on the server, not at deploy time
 - Full pytest support — test functions locally before deploying
 
+#### Module context — constants, helpers, and imports
+
+By default (`package="auto"`), a task's deployed source isn't just its
+isolated function body — any module-level constant or same-module helper
+function it references is auto-detected (by inspecting the function's
+bytecode) and included, and any module-level import it needs is re-emitted
+too:
+
+```python
+API_BASE = "https://api.example.com"   # module-level constant
+
+def _normalize(row, base):             # module-level helper
+    row["base"] = base
+    return row
+
+@task
+def clean(rows):
+    return [_normalize(r, API_BASE) for r in rows]
+```
+
+`clean`'s deployed package includes `API_BASE`, `_normalize`, and `clean`
+itself. If a task references something that can't be safely auto-included
+this way — an imported class instance, a bound method, or any other object
+that isn't JSON-serializable data, a same-module function, or an imported
+name — pipeline construction fails **locally**, naming exactly what's
+missing, instead of deploying something that only breaks once it runs
+remotely.
+
+For cases auto-detection can't handle (e.g. a task that legitimately needs
+a whole helper module), pass `package="module"` to skip auto-detection and
+deploy the task's entire containing module verbatim instead. This is
+broader and heavier than the default — the whole file ships, including any
+unrelated top-level code in it — so treat it as an escape hatch, not the
+default choice:
+
+```python
+@task(package="module")
+def clean(rows):
+    return heavy_helpers.transform(rows)
+```
+
+> Deploying a task with a custom Python `runtime=`/`requirements=` or a
+> container `image=` isn't supported yet — both need backend runtime/image
+> dispatch that doesn't exist yet.
+
 ### @condition — Branching
 
 Route data to different paths based on a Python function returning bool.

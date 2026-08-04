@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import builtins
 import inspect
+import json
 import re
 import secrets
 import textwrap
@@ -226,6 +229,273 @@ def _extract_func_source(func: Callable) -> str:
             func_lines.append(line)
 
     return textwrap.dedent("\n".join(func_lines))
+
+
+# ---------------------------------------------------------------------------
+# Task module packaging (brokoli-sdk#3)
+# ---------------------------------------------------------------------------
+#
+# ``_extract_func_source`` (above) captures only the isolated function body,
+# which silently drops any module-level constant, helper function, or import
+# a task's body references -- the task deploys fine locally (since
+# ``inspect.getsource`` only needs the function itself) but fails *remotely*
+# with a ``NameError``, because the remote execution namespace never saw
+# those module-level names.
+#
+# The functions below fix that for ``@task`` specifically (see
+# ``_TaskWrapper``) in two modes, selected via ``@task(package=...)``:
+#
+# - ``"auto"`` (default): inspect the task function's bytecode for names it
+#   references but doesn't define itself, resolve each one against the
+#   function's ``__globals__``, and either (a) auto-include it -- inlining
+#   JSON-serializable constants and same-module helper functions
+#   (recursively), and re-emitting the module's top-level import statement
+#   for imported names -- or (b) fail *locally*, at pipeline-build time,
+#   naming exactly what couldn't be included. A task with no such
+#   references behaves byte-for-byte as before -- this mode is a strict
+#   superset of the old isolated-function behavior.
+# - ``"module"``: an explicit escape hatch that skips auto-detection
+#   entirely and deploys the task's *entire* containing module source
+#   verbatim. Heavier than "auto" (the whole file ships, including any
+#   unrelated top-level code -- e.g. pipeline-construction code that lives
+#   in the same file) but always works, for cases auto-detection can't
+#   handle (e.g. a legitimately whole helper module of dependencies).
+
+_PACKAGE_MODES: tuple[str, ...] = ("auto", "module")
+
+
+def _is_json_serializable(value: Any) -> bool:
+    """Best-effort check that *value* round-trips through ``json.dumps``."""
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return True
+
+
+def _referenced_names(code: Any) -> set[str]:
+    """All names *code* looks up by name (``LOAD_GLOBAL``/``LOAD_ATTR``/etc,
+    i.e. ``co_names``), including names referenced only inside nested code
+    objects (nested ``def``s, lambdas, comprehensions).
+
+    Comprehensions get their own nested code object on Python < 3.12 and
+    are inlined into the parent's code object from 3.12 on (PEP 709) --
+    recursing into ``co_consts`` for nested code objects handles both.
+    """
+    names: set[str] = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, type(code)):
+            names |= _referenced_names(const)
+    return names
+
+
+def _external_refs(func: Callable) -> list[str]:
+    """Names *func* (transitively, including nested scopes) references that
+    aren't its own parameters/locals/cellvars and aren't builtins -- i.e.
+    names that can only resolve via ``func.__globals__`` at call time.
+    """
+    code = func.__code__
+    local = set(code.co_varnames) | set(code.co_cellvars)
+    out = []
+    for name in sorted(_referenced_names(code)):
+        if name in local or hasattr(builtins, name):
+            continue
+        out.append(name)
+    return out
+
+
+def _module_top_level_imports(module: Any) -> dict[str, str]:
+    """Map each name bound by a top-level ``import``/``from ... import`` in
+    *module* to the exact source text of the statement that binds it, so
+    only the imports a task actually needs can be selectively re-emitted.
+    """
+    if module is None:
+        return {}
+    try:
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return {}
+    lines = source.splitlines()
+    bindings: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            start = node.lineno
+            end = getattr(node, "end_lineno", node.lineno)
+            stmt = "\n".join(lines[start - 1:end])
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                bindings[bound] = stmt
+    return bindings
+
+
+def _module_top_level_names(module: Any) -> list[str]:
+    """All names bound at *module*'s top level (defs, classes, assignments,
+    imports) -- used to describe what ``package="module"`` mode included.
+    """
+    if module is None:
+        return []
+    try:
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return []
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+    return sorted(names)
+
+
+def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
+    """Auto-detect and inline module-level names *func* (transitively)
+    references. Returns ``(source_text, included_names)``.
+
+    Raises :class:`PipelineError` naming exactly which referenced names
+    couldn't be safely auto-included (an imported module/class/instance
+    used directly as a value, a bound method, etc.) -- this is a *local*,
+    deploy-time failure, replacing what used to be a silent deploy that
+    only failed remotely with a ``NameError``.
+    """
+    module = inspect.getmodule(func)
+    module_globals = func.__globals__
+    import_bindings = _module_top_level_imports(module)
+
+    included_imports: dict[str, str] = {}
+    included_constants: dict[str, Any] = {}
+    included_functions: dict[str, Callable] = {}
+    errors: list[str] = []
+
+    def visit(fn: Callable) -> None:
+        for name in _external_refs(fn):
+            if (
+                name in included_imports
+                or name in included_constants
+                or name in included_functions
+            ):
+                continue
+            if name in import_bindings:
+                included_imports[name] = import_bindings[name]
+                continue
+            if name not in module_globals:
+                # Not resolvable at module scope from here (e.g. a plain
+                # attribute-access name that happens to share co_names, or
+                # a name that's simply undefined -- not this pass's job to
+                # invent a value for it).
+                continue
+            value = module_globals[name]
+            if value is func:
+                continue  # self-reference; already included as the main function
+            if inspect.isfunction(value) and inspect.getmodule(value) is module:
+                included_functions[name] = value
+                visit(value)  # recurse; dict membership above guards cycles
+                continue
+            if _is_json_serializable(value):
+                included_constants[name] = value
+                continue
+            errors.append(name)
+
+    visit(func)
+
+    if errors:
+        names = ", ".join(sorted(set(errors)))
+        raise PipelineError(
+            f"@task {func.__qualname__!r} references {names}, which "
+            "can't be safely auto-included in its deployed package (not "
+            "JSON-serializable data, a same-module helper function, or an "
+            "imported name). Either remove the reference, or use "
+            "@task(package=\"module\") to deploy the whole containing "
+            "module instead."
+        )
+
+    parts: list[str] = []
+    for stmt in sorted(set(included_imports.values())):
+        parts.append(stmt)
+    if included_imports:
+        parts.append("")
+    for name in sorted(included_constants):
+        parts.append(f"{name} = {included_constants[name]!r}")
+    if included_constants:
+        parts.append("")
+    for name in included_functions:  # insertion order == dependency-visit order
+        parts.append(_extract_func_source(included_functions[name]))
+        parts.append("")
+    parts.append(_extract_func_source(func))
+
+    included_names = sorted(
+        set(included_imports) | set(included_constants) | set(included_functions)
+    )
+    return "\n".join(parts), included_names
+
+
+def _package_task_module(func: Callable) -> tuple[str, list[str]]:
+    """Return the entire source of *func*'s containing module, verbatim.
+
+    The explicit ``package="module"`` escape hatch -- broader/heavier than
+    auto-detection (the whole file ships, not just what's referenced) but
+    always works, for cases "auto" can't handle.
+    """
+    module = inspect.getmodule(func)
+    if module is None:
+        raise PipelineError(
+            f"@task(package=\"module\"): can't locate the containing "
+            f"module for {func.__qualname__!r} (it may have been defined "
+            "dynamically, e.g. via exec()) -- module packaging needs a "
+            "real source file."
+        )
+    try:
+        source = inspect.getsource(module)
+    except (OSError, TypeError) as exc:
+        raise PipelineError(
+            f"@task(package=\"module\"): couldn't read source for module "
+            f"{module.__name__!r}: {exc}"
+        ) from exc
+    return textwrap.dedent(source), _module_top_level_names(module)
+
+
+def _package_task_source(
+    func: Callable, mode: str
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """Extract *func*'s deployable source per *mode* (``"auto"``/``"module"``).
+
+    Returns ``(source_text, package_meta)``. *package_meta* is ``None`` when
+    nothing beyond the isolated function itself was needed (mode "auto"
+    with no external references) -- callers should omit the IR "package"
+    block entirely in that case, so a task using none of this machinery
+    serializes exactly as it did before this feature existed.
+    """
+    if mode not in _PACKAGE_MODES:
+        raise PipelineError(
+            f"@task(package={mode!r}): expected one of {_PACKAGE_MODES!r}"
+        )
+
+    if mode == "module":
+        source_text, included = _package_task_module(func)
+        package_meta = {
+            "mode": "module",
+            "included": included,
+            "callable": f"{func.__module__}:{func.__qualname__}",
+        }
+        return source_text, package_meta
+
+    source_text, included = _package_task_auto(func)
+    if not included:
+        return source_text, None
+    package_meta = {
+        "mode": "auto",
+        "included": included,
+        "callable": f"{func.__module__}:{func.__qualname__}",
+    }
+    return source_text, package_meta
 
 
 # ---------------------------------------------------------------------------
@@ -528,11 +798,13 @@ class _TaskWrapper:
         name: str,
         pipeline: "Pipeline",
         config: dict[str, Any],
+        package: str = "auto",
     ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
         self._config = config
+        self._package = package
         self.__wrapped__ = func
         self.__name__ = func.__name__
         # Cache of the node created by the zero-arg "auto-call" path (used
@@ -548,7 +820,7 @@ class _TaskWrapper:
         if not inputs and self._auto_ref is not None:
             return self._auto_ref
 
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, self._package)
 
         call_script = TASK_WRAPPER_TEMPLATE.format(
             func_source=func_source,
@@ -560,6 +832,8 @@ class _TaskWrapper:
             "script": call_script,
             **self._config,
         }
+        if package_meta is not None:
+            config["package"] = package_meta
 
         node_id = _make_id(self._name)
         self._pipeline._add_node(node_id, "code", self._name, config)
@@ -637,7 +911,7 @@ class _TaskWrapper:
                     "backend support."
                 )
 
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, self._package)
         call_script = TASK_WRAPPER_TEMPLATE.format(
             func_source=func_source,
             func_name=self._func.__name__,
@@ -655,6 +929,8 @@ class _TaskWrapper:
             **self._config,
             "expansion": expansion,
         }
+        if package_meta is not None:
+            config["package"] = package_meta
 
         node_id = _make_id(self._name)
         self._pipeline._add_node(

@@ -43,6 +43,7 @@ def task(
     timeout: Any = UNSET,
     on_success: Optional[Callable] = None,
     on_failure: Optional[str | Callable] = None,
+    package: str = "auto",
 ) -> _TaskWrapper | Callable:
     """Wrap a Python function as a code node for general data processing.
 
@@ -60,6 +61,42 @@ def task(
             for r in rows:
                 r["domain"] = r["email"].split("@")[1]
             return rows
+
+    By default (``package="auto"``), a task's deployed source is more than
+    just the isolated function body: any module-level constant or
+    same-module helper function it references is detected (by inspecting
+    the function's bytecode) and automatically included, and any module
+    import it needs is re-emitted too::
+
+        API_BASE = "https://api.example.com"   # module-level constant
+
+        def _normalize(row, base):             # module-level helper
+            row["base"] = base
+            return row
+
+        @task
+        def clean(rows):
+            return [_normalize(r, API_BASE) for r in rows]
+
+    ``clean``'s deployed package includes ``API_BASE``, ``_normalize``, and
+    ``clean`` itself -- so it doesn't fail remotely with a ``NameError`` the
+    way isolated-function extraction used to. If a task references
+    something that can't be safely auto-included this way (an imported
+    class instance, a bound method, an arbitrary object that isn't
+    JSON-serializable, ...), pipeline construction raises a
+    :class:`~brokoli.exceptions.PipelineError` *locally*, naming exactly
+    what's missing, rather than deploying something that would only fail
+    once it runs remotely.
+
+    Pass ``package="module"`` to skip auto-detection and deploy the task's
+    *entire* containing module verbatim instead -- broader/heavier (the
+    whole file ships, including unrelated top-level code) but an escape
+    hatch for cases auto-detection can't handle, e.g. a task that
+    legitimately needs a whole helper module of dependencies::
+
+        @task(package="module")
+        def clean(rows):
+            return heavy_helpers.transform(rows)
     """
     config: dict = {}
     if retries is not UNSET and retries is not None:
@@ -73,7 +110,7 @@ def task(
     def decorator(func: Callable) -> _TaskWrapper:
         task_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@task")
-        return _TaskWrapper(func, task_name, pipeline, config)
+        return _TaskWrapper(func, task_name, pipeline, config, package=package)
 
     if callable(name_or_func):
         func = name_or_func
