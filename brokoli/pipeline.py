@@ -47,6 +47,17 @@ NODE_TYPE_CAPABILITIES: dict[str, list[str]] = {
     "sink_db": ["sink"],
     "sink_file": ["sink"],
     "sink_api": ["sink"],
+    # -- Typed dataset/collection refs (brokoli-sdk#2) --
+    #
+    # "union" is a dedicated node type (a dataset-manifest-combination
+    # node -- see union()/CollectionRef.collect() below) rather than a
+    # chain of individual merge edges. "dataset_map"/"dataset_filter" are
+    # partition-transform nodes on DatasetRef, deliberately a different
+    # node *type* from the "code" type the @map/@filter decorators
+    # register, so the two don't look interchangeable in serialized JSON.
+    "union": ["compute", "dataset-output"],
+    "dataset_map": ["compute", "dataset-output"],
+    "dataset_filter": ["compute", "dataset-output"],
 }
 DEFAULT_CAPABILITIES: tuple[str, ...] = ("compute",)
 
@@ -266,6 +277,177 @@ class NodeRef:
         raise TypeError(f"Cannot connect to {type(item).__name__}")
 
 
+# ---------------------------------------------------------------------------
+# Typed node references (brokoli-sdk#2)
+# ---------------------------------------------------------------------------
+#
+# NodeRef subclasses that let node-building functions declare what *kind*
+# of thing a node produces -- so pipeline code (and IDEs/type checkers)
+# can tell "this produces one scalar value" apart from "this produces a
+# multi-gigabyte dataset" apart from "this produces a dynamic collection
+# of N items whose size isn't known until the pipeline runs" (RFC §19.1).
+#
+# All four add no fields beyond plain NodeRef, so every existing NodeRef
+# consumer (``>>``, ``_resolve``, ``_MultiRef``, chaining, ...) keeps
+# working completely unchanged -- this is a purely additive typing layer.
+#
+# Not every node-building function returns one of these; see
+# brokoli/nodes.py and the PR description for the full mapping and the
+# reasoning behind it (some node kinds are genuinely ambiguous -- e.g. a
+# ``code`` node can produce anything -- and are deliberately left as
+# plain NodeRef rather than force-fit into one of these four).
+#
+# SCOPE: this is SDK API surface and IR compilation only. There is no
+# backend support yet for dynamic per-item task instances or partition
+# execution -- see brokoli-sdk#2 and the RFC §11-13 physical-planner
+# tracking in Tnsor-Labs/brokoli.
+
+class ScalarRef(NodeRef):
+    """A :class:`NodeRef` whose node produces a single scalar value.
+
+    E.g. ``source_api(..., response="scalar", value_path="data.count")``.
+    """
+
+
+class ArtifactRef(NodeRef):
+    """A :class:`NodeRef` whose node produces an opaque artifact (a file
+    or binary blob) rather than a tabular dataset or a single value.
+
+    E.g. ``source_api(..., response="artifact")``.
+    """
+
+
+class DatasetRef(NodeRef):
+    """A :class:`NodeRef` whose node produces a tabular dataset (rows).
+
+    Adds ``.map()``/``.filter()``, which compile to *partition-transform*
+    IR nodes (node types ``dataset_map``/``dataset_filter``) -- distinct
+    from the ``@map``/``@filter`` decorators in ``brokoli.decorators``,
+    which register ordinary ``code`` nodes.
+
+    When to use which (RFC §19.7 flags unexplained parallel API styles as
+    a real usability problem, so to be explicit):
+
+    - ``@map``/``@filter`` (decorators): write a plain Python function
+      that runs once and sees the *whole* node output (a list of row
+      dicts) at once. This is the only one of the two styles that
+      actually executes today -- the decorator generates a runnable
+      script and registers a ``code`` node.
+    - ``DatasetRef.map()``/``.filter()`` (these methods): describe a
+      transform intended to run *per-partition*, independently and in
+      parallel, once the backend physical planner exists (RFC §12.1).
+      These compile to ``dataset_map``/``dataset_filter`` IR nodes only
+      -- *there is no backend support to execute them yet*; the function
+      you pass is recorded as a name reference, not serialized as
+      runnable code or invoked locally.
+    """
+
+    def map(self, fn: Callable, name: str = "") -> "DatasetRef":
+        """Compile a partition-level map transform over this dataset.
+
+        See the class docstring for how this differs from ``@map``.
+        """
+        return _add_partition_transform_node(self, "dataset_map", fn, name)
+
+    def filter(self, fn: Callable, name: str = "") -> "DatasetRef":
+        """Compile a partition-level filter transform over this dataset.
+
+        See the class docstring for how this differs from ``@filter``.
+        """
+        return _add_partition_transform_node(self, "dataset_filter", fn, name)
+
+
+class CollectionRef(NodeRef):
+    """A :class:`NodeRef` whose node produces a dynamic collection of
+    items (e.g. one entry per file/page/record from an upstream source)
+    whose exact count isn't known until the pipeline runs.
+
+    Not returned by any built-in source today -- dynamic collections are
+    backend (physical-planner) work that doesn't exist yet. Currently
+    produced only by ``_TaskWrapper.expand()`` (the dynamic fan-out of a
+    ``@task`` over an upstream ``CollectionRef``).
+    """
+
+    def collect(self, mode: str = "union", name: str = "") -> "DatasetRef":
+        """Combine this collection's per-item outputs into one dataset.
+
+        Compiles to the same ``union`` IR node shape as the module-level
+        ``union()`` function (``brokoli.nodes.union``) -- just with a
+        single upstream edge (this collection) instead of one edge per
+        explicit ref.
+        """
+        collect_name = name or f"{_node_display_name(self)} (Collected)"
+        return _build_union_node(self.pipeline, collect_name, [self], mode=mode)
+
+
+def _node_display_name(ref: NodeRef) -> str:
+    """Best-effort human-readable name for *ref*'s node (falls back to its id)."""
+    node = ref.pipeline._nodes.get(ref.node_id)
+    return node["name"] if node else ref.node_id
+
+
+def _func_ref(fn: Callable) -> dict[str, Any]:
+    """Serialize *fn* as a name/description reference, not executable code.
+
+    Used for callables passed to primitives whose actual invocation is
+    backend (physical-planner) work that doesn't exist yet -- ``.expand()``'s
+    ``key=`` and ``DatasetRef.map()``/``.filter()``'s ``fn`` -- unlike the
+    ``@task``/``@map``/``@filter`` decorators, which generate a runnable
+    script from the function's source right now.
+    """
+    ref: dict[str, Any] = {"name": getattr(fn, "__name__", repr(fn))}
+    doc = getattr(fn, "__doc__", None)
+    if doc:
+        ref["doc"] = doc.strip().splitlines()[0]
+    return ref
+
+
+def _build_union_node(
+    pipeline: "Pipeline",
+    name: str,
+    refs: list[NodeRef],
+    mode: str = "union",
+) -> "DatasetRef":
+    """Register a dataset-manifest-combination (``union``) node.
+
+    Combines the manifests of *refs* into a single dataset node -- one
+    ``union`` IR node with an edge from each ref -- instead of a chain of
+    individual merge edges. Shared by the module-level ``union()``
+    node-building function (``brokoli.nodes``) and
+    :meth:`CollectionRef.collect`, so both compile to the exact same IR
+    node shape (``union(name, a, b, c)`` and
+    ``collection.collect(mode="union")`` produce the same node type,
+    capabilities, and config -- just a different edge count).
+    """
+    if mode != "union":
+        raise ValueError(
+            f"union()/collect() only support mode='union' currently, got {mode!r}"
+        )
+    if not refs:
+        raise ValueError("union()/collect() requires at least one upstream ref")
+
+    node_id = _make_id(name)
+    pipeline._add_node(node_id, "union", name, {"mode": mode})
+    for ref in refs:
+        pipeline._add_edge(ref.node_id, node_id)
+    return DatasetRef(node_id, pipeline)
+
+
+def _add_partition_transform_node(
+    upstream: "DatasetRef",
+    node_type: str,
+    fn: Callable,
+    name: str,
+) -> "DatasetRef":
+    """Register a ``dataset_map``/``dataset_filter`` partition-transform node."""
+    display_name = name or f"{node_type}({getattr(fn, '__name__', 'fn')})"
+    config = {"function": _func_ref(fn)}
+    node_id = _make_id(display_name)
+    upstream.pipeline._add_node(node_id, node_type, display_name, config)
+    upstream.pipeline._add_edge(upstream.node_id, node_id)
+    return DatasetRef(node_id, upstream.pipeline)
+
+
 class _MultiRef:
     """Multiple node refs -- result of ``[a, b]`` or ``a >> [b, c]``."""
 
@@ -400,6 +582,89 @@ class _TaskWrapper:
         if isinstance(other, NodeRef):
             return self(other)
         return NotImplemented  # type: ignore[return-value]
+
+    def expand(
+        self,
+        key: Optional[Callable] = None,
+        **kwargs: "CollectionRef",
+    ) -> "CollectionRef":
+        """Fan this task out into one dynamic instance per item of an
+        upstream collection, compiling to a *single* IR node carrying an
+        ``expansion`` policy block -- not N static nodes -- driven by
+        data whose size isn't known until the pipeline runs.
+
+        Mirrors, in IR form, what ``a >> [b, c]`` does at authoring time
+        for a Python list literal known up front, except the fan-out
+        factor here is determined at run time by an upstream
+        :class:`CollectionRef`.
+
+        Args:
+            key: Optional callable used to derive a stable per-item
+                instance identity (so re-runs don't spawn duplicate
+                instances for the same item). Not executed locally or
+                serialized as runnable code -- only a name/description
+                reference is recorded (see :func:`_func_ref`); the actual
+                per-item keying happens server-side once backend support
+                for dynamic instances exists.
+            **kwargs: Maps a task parameter name to the upstream
+                :class:`CollectionRef` driving expansion over that
+                parameter, e.g. ``parsed = parse.expand(file=files)``.
+
+        Returns:
+            A :class:`CollectionRef` representing the dynamic collection
+            of per-instance outputs. Chain ``.collect(mode="union")`` to
+            merge them back into a single dataset.
+
+        Note:
+            SDK API surface and IR compilation only -- there is no
+            backend support yet for actually scheduling dynamic per-item
+            task instances or executing this expansion (brokoli-sdk#2).
+        """
+        if not kwargs:
+            raise ValueError(
+                "expand() requires at least one keyword mapping a task "
+                "parameter to a CollectionRef, e.g. .expand(file=files)"
+            )
+        for param, ref in kwargs.items():
+            if not isinstance(ref, CollectionRef):
+                raise TypeError(
+                    f"expand({param}=...): expected a CollectionRef (the "
+                    f"dynamic collection driving expansion), got "
+                    f"{type(ref).__name__}. CollectionRef isn't produced "
+                    "by any built-in source yet -- construct one "
+                    "directly, e.g. CollectionRef(some_ref.node_id, "
+                    "pipeline), when prototyping IR shape ahead of "
+                    "backend support."
+                )
+
+        func_source = _extract_func_source(self._func)
+        call_script = TASK_WRAPPER_TEMPLATE.format(
+            func_source=func_source,
+            func_name=self._func.__name__,
+        )
+
+        expansion: dict[str, Any] = {
+            "over": {param: ref.node_id for param, ref in kwargs.items()},
+        }
+        if key is not None:
+            expansion["key"] = _func_ref(key)
+
+        config: dict[str, Any] = {
+            "language": "python",
+            "script": call_script,
+            **self._config,
+            "expansion": expansion,
+        }
+
+        node_id = _make_id(self._name)
+        self._pipeline._add_node(
+            node_id, "code", self._name, config,
+            capabilities=["compute", "dynamic-expansion", "collection-output"],
+        )
+        for ref in kwargs.values():
+            self._pipeline._add_edge(ref.node_id, node_id)
+
+        return CollectionRef(node_id, self._pipeline)
 
 
 class _ConditionWrapper:
