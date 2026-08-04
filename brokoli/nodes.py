@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, Any
 
 from brokoli.exceptions import ContextError
+from brokoli.pagination import PaginationStrategy
 from brokoli.parsing import ParseError, parse_quality_rule
 from brokoli.pipeline import Pipeline, NodeRef, _make_id, _MultiRef
 # UNSET is defined in its own module (not here) so brokoli.pipeline can use
@@ -141,6 +142,11 @@ def source_api(
     retries: Any = UNSET,
     retry_backoff: str = "exponential",
     timeout: Any = UNSET,
+    params: Any = UNSET,
+    response: str = "dataset",
+    records: Any = UNSET,
+    value_path: Any = UNSET,
+    pagination: Any = UNSET,
 ) -> NodeRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -153,11 +159,75 @@ def source_api(
                 headers={"Accept": "application/geo+json"},
                 timeout=60,
             )
+
+    Query params
+    ------------
+    ``params`` is a plain dict of query-string key/value pairs, merged
+    onto ``url`` by the backend at request time. Values may contain the
+    same ``{{ ds }}``-style template placeholders already supported in
+    ``url``/``headers``/``query`` elsewhere in this SDK (see the
+    "Template Variables" section of the README) -- the SDK does not
+    interpret or expand these itself; it passes ``params`` through
+    unchanged as opaque config for the backend/scheduler to resolve.
+
+    Response shape (closing RFC V2 §5.1's ambiguous-output-contract gap)
+    ----------------------------------------------------------------------
+    ``response`` declares how to interpret the HTTP response body, and
+    is always present in the compiled config (like ``method``) so the
+    contract is never ambiguous:
+
+    - ``"dataset"`` (default): the body is, or contains via ``records``,
+      a list of records forming a tabular dataset.
+    - ``"scalar"``: the body contains a single value at ``value_path``.
+    - ``"artifact"``: the raw response is stored as an opaque artifact
+      (e.g. a file/binary download); no record extraction happens.
+
+    ``records`` is a dot-path into the JSON body pointing at the list of
+    records to extract for ``response="dataset"`` (e.g. ``"results"``,
+    or ``"data.items"`` for a nested ``{"data": {"items": [...]}}``
+    shape). ``value_path`` is the equivalent dot-path for
+    ``response="scalar"``. Setting both is rejected by
+    ``brokoli.validation`` -- they are mutually exclusive.
+
+    Pagination (RFC V2 §14.2-14.4) -- SDK-side config only
+    ---------------------------------------------------------
+    ``pagination`` accepts a strategy built with one of
+    ``brokoli.pagination.offset_pages``, ``cursor_pages``,
+    ``numbered_pages``, ``next_link_pages``, or ``link_header_pages``,
+    optionally chained with ``.with_execution(...)`` to attach a
+    concurrency/rate-limit/retry/checkpoint policy. Requires
+    ``response="dataset"``.
+
+    This function only produces the declarative ``pagination`` /
+    ``execution`` config blocks in the compiled IR. Expanding a
+    paginated source into concrete per-page fetch instances, running
+    them under the configured concurrency/rate-limit policy, and
+    stitching per-page results back together is backend
+    (physical-planner) work -- separate, not yet implemented, and out
+    of scope for this SDK.
+
+    Example (the RFC's GBIF worked example)::
+
+        from brokoli import source_api
+        from brokoli.pagination import offset_pages
+
+        occurrences = source_api(
+            "GBIF Occurrences",
+            url="https://api.gbif.org/v1/occurrence/search",
+            params={"hasCoordinate": "true", "occurrenceStatus": "PRESENT"},
+            records="results",
+            pagination=offset_pages(
+                page_size=300, max_records=30_000, end_flag="endOfRecords",
+            ).with_execution(max_concurrency=4, requests_per_second=5),
+        )
     """
     optional: dict = {
         "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
         "body": body,
         "conn_id": conn_id,
+        "params": dict(params) if params is not UNSET and params is not None else UNSET,
+        "records": records,
+        "value_path": value_path,
     }
     if retries is not UNSET and retries is not None:
         optional["max_retries"] = retries
@@ -165,7 +235,22 @@ def source_api(
     if timeout is not UNSET and timeout is not None:
         optional["timeout"] = timeout
 
-    config = _build_config({"url": url, "method": method}, optional)
+    if pagination is not UNSET and pagination is not None:
+        if isinstance(pagination, PaginationStrategy):
+            optional["pagination"] = pagination.to_config()
+            exec_config = pagination.execution_config()
+            if exec_config:
+                optional["execution"] = exec_config
+        elif isinstance(pagination, dict):
+            optional["pagination"] = dict(pagination)
+        else:
+            raise TypeError(
+                "source_api(pagination=...) must be a PaginationStrategy "
+                "(from brokoli.pagination, e.g. offset_pages(...)) or a "
+                f"plain dict, got {type(pagination).__name__}"
+            )
+
+    config = _build_config({"url": url, "method": method, "response": response}, optional)
     return _register_node("source_api", name, config)
 
 

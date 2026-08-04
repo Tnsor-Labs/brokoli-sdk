@@ -7,11 +7,14 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
+from brokoli.pagination import VALID_PAGINATION_STRATEGIES
 from brokoli.parsing import ParseError  # noqa: F401 — re-exported for consumers
 
 REQUEST_TIMEOUT = 10
 
 ALLOWED_DBT_COMMANDS = {"run", "test", "build", "seed", "snapshot", "compile", "debug", "clean"}
+
+VALID_SOURCE_API_RESPONSES = {"dataset", "scalar", "artifact"}
 
 
 class ValidationIssue:
@@ -72,6 +75,47 @@ def _validate_source_db(name: str, config: dict[str, Any], result: ValidationRes
 def _validate_source_api(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("url"):
         result.add_error(name, "url", "Source API requires a 'url'")
+
+    response = config.get("response", "dataset")
+    if response not in VALID_SOURCE_API_RESPONSES:
+        result.add_error(
+            name, "response",
+            f"Source API 'response' must be one of {sorted(VALID_SOURCE_API_RESPONSES)}, "
+            f"got {response!r}",
+        )
+
+    records = config.get("records")
+    value_path = config.get("value_path")
+    if records is not None and value_path is not None:
+        result.add_error(
+            name, "records",
+            "Source API cannot set both 'records' and 'value_path' — "
+            "'records' extracts a list for response='dataset', 'value_path' "
+            "extracts a single value for response='scalar'; use only one",
+        )
+
+    pagination = config.get("pagination")
+    if pagination is not None:
+        if response != "dataset":
+            result.add_error(
+                name, "pagination",
+                f"Source API 'pagination' requires response='dataset' "
+                f"(got response={response!r})",
+            )
+        if not isinstance(pagination, dict):
+            result.add_error(
+                name, "pagination",
+                "Source API 'pagination' must be a dict-shaped config "
+                "(build it with brokoli.pagination.offset_pages(...) or similar)",
+            )
+        else:
+            strategy = pagination.get("strategy")
+            if strategy not in VALID_PAGINATION_STRATEGIES:
+                result.add_error(
+                    name, "pagination",
+                    f"Unknown pagination strategy {strategy!r}. Must be one of "
+                    f"{sorted(VALID_PAGINATION_STRATEGIES)}",
+                )
 
 
 def _validate_source_file(name: str, config: dict[str, Any], result: ValidationResult) -> None:

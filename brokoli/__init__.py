@@ -16,6 +16,10 @@ from brokoli.nodes import (
     migrate, dbt, notify, condition_node,
     parallel,
 )
+from brokoli.pagination import (
+    offset_pages, cursor_pages, numbered_pages,
+    next_link_pages, link_header_pages,
+)
 
 __version__ = "0.2.0"
 __all__ = [
@@ -31,4 +35,7 @@ __all__ = [
     "sink_db", "sink_file", "sink_api",
     # Built-in integrations
     "dbt", "notify", "migrate", "condition_node", "parallel",
+    # source_api pagination DSL (declarative config only -- see brokoli.pagination)
+    "offset_pages", "cursor_pages", "numbered_pages",
+    "next_link_pages", "link_header_pages",
 ]
