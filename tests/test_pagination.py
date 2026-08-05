@@ -228,6 +228,21 @@ class TestWithExecution:
         policy = ExecutionPolicy(max_concurrency=3, checkpoint_every=0)
         assert policy.to_config() == {"max_concurrency": 3, "checkpoint_every": 0}
 
+    def test_page_max_retries_and_page_retry_backoff_serialize(self):
+        strat = offset_pages(page_size=100).with_execution(
+            page_max_retries=5, page_retry_backoff="linear",
+        )
+        assert strat.execution_config() == {
+            "page_max_retries": 5,
+            "page_retry_backoff": "linear",
+        }
+
+    def test_page_max_retries_omitted_by_default(self):
+        strat = offset_pages(page_size=100).with_execution(max_concurrency=2)
+        config = strat.execution_config()
+        assert "page_max_retries" not in config
+        assert "page_retry_backoff" not in config
+
 
 # ---------------------------------------------------------------------------
 # pagination= wired into source_api
