@@ -53,12 +53,21 @@ class ExecutionPolicy:
         requests_per_second: Any = UNSET,
         retry_scope: Any = UNSET,
         checkpoint_every: Any = UNSET,
+        page_max_retries: Any = UNSET,
+        page_retry_backoff: Any = UNSET,
     ) -> None:
         self._fields = {
             "max_concurrency": max_concurrency,
             "requests_per_second": requests_per_second,
             "retry_scope": retry_scope,
             "checkpoint_every": checkpoint_every,
+            # page_max_retries/page_retry_backoff configure page-level HTTP
+            # retry independently of the node's top-level max_retries/
+            # retry_backoff (which also govern whole-node retry -- see
+            # Tnsor-Labs/brokoli#47). Leaving these UNSET falls back to
+            # that top-level config, exactly like before this field existed.
+            "page_max_retries": page_max_retries,
+            "page_retry_backoff": page_retry_backoff,
         }
 
     def to_config(self) -> dict[str, Any]:
@@ -85,6 +94,8 @@ class PaginationStrategy:
         requests_per_second: Any = UNSET,
         retry_scope: Any = UNSET,
         checkpoint_every: Any = UNSET,
+        page_max_retries: Any = UNSET,
+        page_retry_backoff: Any = UNSET,
     ) -> "PaginationStrategy":
         """Attach an execution policy, per the RFC's chained ``offset_pages(...).with_execution(...)`` style.
 
@@ -98,6 +109,8 @@ class PaginationStrategy:
             requests_per_second=requests_per_second,
             retry_scope=retry_scope,
             checkpoint_every=checkpoint_every,
+            page_max_retries=page_max_retries,
+            page_retry_backoff=page_retry_backoff,
         )
         return new
 
