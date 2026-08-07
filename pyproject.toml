@@ -25,7 +25,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://brokoli.orkestri.site"
-Documentation = "https://docs.brokoli.orkestri.site"
+Documentation = "https://docs-brokoli.orkestri.site"
 Repository = "https://github.com/Tnsor-Labs/brokoli-sdk"
 Issues = "https://github.com/Tnsor-Labs/brokoli-sdk/issues"
 
