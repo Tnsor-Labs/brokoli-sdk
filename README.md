@@ -79,6 +79,25 @@ sink_file("Name", input, path="/tmp/out.csv", format="csv")
 sink_api("Name", input, url="https://hooks.slack.com/...", method="POST")
 ```
 
+Every node-producing API accepts `node_key=` for explicit logical identity:
+
+```python
+orders = source_db("Daily Orders", query="SELECT ...", node_key="orders-source")
+```
+
+Keys are used exactly as IDs and must match
+`^[a-z][a-z0-9_-]{0,63}$`; invalid or duplicate keys fail pipeline
+construction. Without a key, IDs are deterministic within each pipeline:
+the canonical display-name base plus a per-base counter, such as
+`daily_orders_1` and `daily_orders_2`. Adding another node with the same
+canonical name can therefore renumber later same-name nodes; use explicit
+keys where identity must survive reordering or display-name changes.
+
+**Migration:** releases before deterministic identity generated random node
+IDs. The first deployment after upgrading will replace those old IDs once;
+assign `node_key` to important nodes before that deployment if downstream
+history or references need a deliberate stable identity.
+
 ### @task — Python Functions as Nodes
 
 Real Python functions with full IDE support. Source code is extracted at deploy time.
@@ -224,7 +243,11 @@ def parse(rows):
     ...
 
 # `files` is a CollectionRef (e.g. from a future paginated/listing source)
-parsed = parse.expand(file=files, key=lambda f: f["path"])
+parsed = parse.expand(
+    file=files,
+    key=lambda f: f["path"],       # per-item expansion identity
+    node_key="parse-files",       # identity of the logical expand node
+)
 ```
 
 `key=` is optional and gives each dynamic instance a stable identity
@@ -234,6 +257,17 @@ keying happens server-side once backend support for dynamic instances
 exists. `.expand()` returns a `CollectionRef` (the dynamic collection of
 per-instance outputs) — chain `.collect(mode="union")` on it to merge
 results back into one dataset.
+
+`key=` and `node_key=` are distinct: `key=` derives each runtime item's
+expansion identity, while `node_key=` identifies the single logical node in
+the compiled graph.
+
+For backward compatibility, a task parameter literally named `node_key`
+still works: `parse.expand(node_key=files, other=metadata)` treats a
+`CollectionRef` value as an expansion input and uses the decorator/default
+logical identity. A string value, such as
+`parse.expand(node_key="parse-files", file=files)`, is the logical node ID.
+The per-item `key=callable` behavior is unchanged.
 
 #### `union()` / `.collect(mode="union")` — combine into one dataset
 

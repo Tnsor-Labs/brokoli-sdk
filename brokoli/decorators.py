@@ -44,6 +44,7 @@ def task(
     on_success: Optional[Callable] = None,
     on_failure: Optional[str | Callable] = None,
     package: str = "auto",
+    node_key: Optional[str] = None,
 ) -> _TaskWrapper | Callable:
     """Wrap a Python function as a code node for general data processing.
 
@@ -110,7 +111,9 @@ def task(
     def decorator(func: Callable) -> _TaskWrapper:
         task_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@task")
-        return _TaskWrapper(func, task_name, pipeline, config, package=package)
+        return _TaskWrapper(
+            func, task_name, pipeline, config, package=package, node_key=node_key
+        )
 
     if callable(name_or_func):
         func = name_or_func
@@ -127,6 +130,7 @@ def condition(
     name_or_func: str | Callable | None = None,
     *,
     name: str = "",
+    node_key: Optional[str] = None,
 ) -> _ConditionWrapper | Callable:
     """Declare a Python condition predicate.
 
@@ -137,7 +141,7 @@ def condition(
     def decorator(func: Callable) -> _ConditionWrapper:
         cond_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@condition")
-        return _ConditionWrapper(func, cond_name, pipeline)
+        return _ConditionWrapper(func, cond_name, pipeline, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -156,6 +160,7 @@ def source(
     name: str = "",
     retries: Any = UNSET,
     timeout: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> _SourceWrapper | Callable:
     """Wrap a function as a custom data source (no input, returns rows).
 
@@ -182,7 +187,7 @@ def source(
     def decorator(func: Callable) -> _SourceWrapper:
         src_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@source")
-        return _SourceWrapper(func, src_name, pipeline, config)
+        return _SourceWrapper(func, src_name, pipeline, config, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -201,6 +206,7 @@ def sink(
     name: str = "",
     retries: Any = UNSET,
     timeout: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> _SinkWrapper | Callable:
     """Wrap a function as a custom data sink (takes rows, writes somewhere).
 
@@ -231,7 +237,7 @@ def sink(
     def decorator(func: Callable) -> _SinkWrapper:
         sink_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@sink")
-        return _SinkWrapper(func, sink_name, pipeline, config)
+        return _SinkWrapper(func, sink_name, pipeline, config, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -248,6 +254,7 @@ def filter(
     name_or_func: str | Callable | None = None,
     *,
     name: str = "",
+    node_key: Optional[str] = None,
 ) -> _FilterWrapper | Callable:
     """Wrap a row-level predicate as a filter node.
 
@@ -264,7 +271,7 @@ def filter(
     def decorator(func: Callable) -> _FilterWrapper:
         filt_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@filter")
-        return _FilterWrapper(func, filt_name, pipeline)
+        return _FilterWrapper(func, filt_name, pipeline, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -281,6 +288,7 @@ def map(
     name_or_func: str | Callable | None = None,
     *,
     name: str = "",
+    node_key: Optional[str] = None,
 ) -> _MapWrapper | Callable:
     """Wrap a row-level transform as a map node.
 
@@ -299,7 +307,7 @@ def map(
     def decorator(func: Callable) -> _MapWrapper:
         map_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@map")
-        return _MapWrapper(func, map_name, pipeline)
+        return _MapWrapper(func, map_name, pipeline, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -317,6 +325,7 @@ def validate(
     *,
     name: str = "",
     on_failure: str = "block",
+    node_key: Optional[str] = None,
 ) -> _ValidateWrapper | Callable:
     """Wrap a function as a custom quality check.
 
@@ -341,7 +350,9 @@ def validate(
     def decorator(func: Callable) -> _ValidateWrapper:
         val_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@validate")
-        return _ValidateWrapper(func, val_name, pipeline, on_failure)
+        return _ValidateWrapper(
+            func, val_name, pipeline, on_failure, node_key=node_key
+        )
 
     if callable(name_or_func):
         func = name_or_func
@@ -360,6 +371,7 @@ def sensor(
     name: str = "",
     poll_interval: int = 60,
     timeout: Any = 3600,
+    node_key: Optional[str] = None,
 ) -> _SensorWrapper | Callable:
     """Wrap a function as a sensor that polls until ready.
 
@@ -388,7 +400,9 @@ def sensor(
     def decorator(func: Callable) -> _SensorWrapper:
         sensor_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@sensor")
-        return _SensorWrapper(func, sensor_name, pipeline, poll_interval, timeout)
+        return _SensorWrapper(
+            func, sensor_name, pipeline, poll_interval, timeout, node_key=node_key
+        )
 
     if callable(name_or_func):
         func = name_or_func

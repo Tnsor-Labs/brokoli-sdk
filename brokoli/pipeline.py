@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import ast
 import builtins
+from contextlib import contextmanager
 import inspect
 import json
 import re
-import secrets
 import textwrap
 from typing import Any, Callable, Optional
 
@@ -209,10 +209,13 @@ SENSOR_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
 # ---------------------------------------------------------------------------
 
 def _make_id(name: str) -> str:
-    """Generate a short unique ID from a name: slugified prefix + random hex."""
+    """Return the deterministic canonical ID base for a display name."""
     clean = name.lower().replace(" ", "_")
     clean = "".join(c for c in clean if c.isalnum() or c == "_")
-    return clean[:20] + "_" + secrets.token_hex(3)
+    return clean[:20] or "node"
+
+
+_NODE_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def _extract_func_source(func: Callable) -> str:
@@ -516,9 +519,10 @@ class NodeRef:
     def __rshift__(self, other: Any) -> "NodeRef | _MultiRef":
         """``a >> b``, ``a >> [b, c]``, ``a >> func``."""
         if isinstance(other, list):
-            refs = [self._resolve(item) for item in other]
-            for ref in refs:
-                self.pipeline._add_edge(self.node_id, ref.node_id)
+            with self.pipeline._transaction(other):
+                refs = [self._resolve(item) for item in other]
+                for ref in refs:
+                    self.pipeline._add_edge(self.node_id, ref.node_id)
             return _MultiRef(refs, self.pipeline)
 
         ref = self._resolve(other)
@@ -527,16 +531,23 @@ class NodeRef:
 
     def __or__(self, other: Any) -> "_MultiRef":
         """``a | b`` -- group for parallel fan-out (no edge added)."""
-        ref = self._resolve(other)
+        with self.pipeline._transaction([other]):
+            ref = self._resolve(other)
         return _MultiRef([self, ref], self.pipeline)
 
     def _resolve(self, item: Any) -> "NodeRef":
         """Convert a node-like object to a :class:`NodeRef`."""
+        owner = getattr(item, "pipeline", getattr(item, "_pipeline", self.pipeline))
+        if owner is not self.pipeline:
+            raise PipelineError("Nodes from different pipelines cannot be connected.")
         if isinstance(item, NodeRef):
+            self.pipeline._validate_refs([item])
             return item
         if isinstance(item, _MultiRef):
+            self.pipeline._validate_refs(item.refs)
             return item.refs[0]
         if isinstance(item, _ConditionBranch):
+            self.pipeline._validate_refs([item._ref])
             return item._ref
         # Auto-call wrappers that haven't been invoked yet
         _auto_call_types = (
@@ -601,21 +612,9 @@ class ConditionRef(NodeRef):
             owner = getattr(item, "pipeline", getattr(item, "_pipeline", self.pipeline))
             if owner is not self.pipeline:
                 raise PipelineError("Condition branches cannot cross pipeline boundaries.")
-        nodes_before = dict(self.pipeline._nodes)
-        edges_before = list(self.pipeline._edges)
-        order_before = list(self.pipeline._node_order)
-        branches_before = dict(self.pipeline._branches)
-        cached_refs = [
-            (item, item._auto_ref)
-            for item in items
-            if hasattr(item, "_auto_ref")
-        ]
-
-        try:
+        with self.pipeline._transaction(items):
             refs = [self._resolve(item) for item in items]
             for ref in refs:
-                if ref.pipeline is not self.pipeline:
-                    raise PipelineError("Condition branches cannot cross pipeline boundaries.")
                 if self.pipeline._nodes.get(ref.node_id, {}).get("type") == "condition":
                     raise PipelineError(
                         "Nested conditional routing is not supported; route to a "
@@ -630,14 +629,6 @@ class ConditionRef(NodeRef):
                             )
             for ref in refs:
                 self.pipeline._add_edge(self.node_id, ref.node_id, condition=selected)
-        except Exception:
-            self.pipeline._nodes = nodes_before
-            self.pipeline._edges = edges_before
-            self.pipeline._node_order = order_before
-            self.pipeline._branches = branches_before
-            for item, cached_ref in cached_refs:
-                item._auto_ref = cached_ref
-            raise
 
         if isinstance(other, list):
             return _MultiRef(refs, self.pipeline)
@@ -709,19 +700,27 @@ class DatasetRef(NodeRef):
       runnable code or invoked locally.
     """
 
-    def map(self, fn: Callable, name: str = "") -> "DatasetRef":
+    def map(
+        self, fn: Callable, name: str = "", node_key: Optional[str] = None
+    ) -> "DatasetRef":
         """Compile a partition-level map transform over this dataset.
 
         See the class docstring for how this differs from ``@map``.
         """
-        return _add_partition_transform_node(self, "dataset_map", fn, name)
+        return _add_partition_transform_node(
+            self, "dataset_map", fn, name, node_key=node_key
+        )
 
-    def filter(self, fn: Callable, name: str = "") -> "DatasetRef":
+    def filter(
+        self, fn: Callable, name: str = "", node_key: Optional[str] = None
+    ) -> "DatasetRef":
         """Compile a partition-level filter transform over this dataset.
 
         See the class docstring for how this differs from ``@filter``.
         """
-        return _add_partition_transform_node(self, "dataset_filter", fn, name)
+        return _add_partition_transform_node(
+            self, "dataset_filter", fn, name, node_key=node_key
+        )
 
 
 class CollectionRef(NodeRef):
@@ -735,7 +734,12 @@ class CollectionRef(NodeRef):
     ``@task`` over an upstream ``CollectionRef``).
     """
 
-    def collect(self, mode: str = "union", name: str = "") -> "DatasetRef":
+    def collect(
+        self,
+        mode: str = "union",
+        name: str = "",
+        node_key: Optional[str] = None,
+    ) -> "DatasetRef":
         """Combine this collection's per-item outputs into one dataset.
 
         Compiles to the same ``union`` IR node shape as the module-level
@@ -744,7 +748,9 @@ class CollectionRef(NodeRef):
         explicit ref.
         """
         collect_name = name or f"{_node_display_name(self)} (Collected)"
-        return _build_union_node(self.pipeline, collect_name, [self], mode=mode)
+        return _build_union_node(
+            self.pipeline, collect_name, [self], mode=mode, node_key=node_key
+        )
 
 
 def _node_display_name(ref: NodeRef) -> str:
@@ -774,6 +780,7 @@ def _build_union_node(
     name: str,
     refs: list[NodeRef],
     mode: str = "union",
+    node_key: Optional[str] = None,
 ) -> "DatasetRef":
     """Register a dataset-manifest-combination (``union``) node.
 
@@ -793,7 +800,8 @@ def _build_union_node(
     if not refs:
         raise ValueError("union()/collect() requires at least one upstream ref")
 
-    node_id = _make_id(name)
+    pipeline._validate_refs(refs)
+    node_id = pipeline._allocate_node_id(name, node_key)
     pipeline._add_node(node_id, "union", name, {"mode": mode})
     for ref in refs:
         pipeline._add_edge(ref.node_id, node_id)
@@ -805,11 +813,13 @@ def _add_partition_transform_node(
     node_type: str,
     fn: Callable,
     name: str,
+    node_key: Optional[str] = None,
 ) -> "DatasetRef":
     """Register a ``dataset_map``/``dataset_filter`` partition-transform node."""
+    upstream.pipeline._validate_refs([upstream])
     display_name = name or f"{node_type}({getattr(fn, '__name__', 'fn')})"
     config = {"function": _func_ref(fn)}
-    node_id = _make_id(display_name)
+    node_id = upstream.pipeline._allocate_node_id(display_name, node_key)
     upstream.pipeline._add_node(node_id, node_type, display_name, config)
     upstream.pipeline._add_edge(upstream.node_id, node_id)
     return DatasetRef(node_id, upstream.pipeline)
@@ -819,6 +829,7 @@ class _MultiRef:
     """Multiple node refs -- result of ``[a, b]`` or ``a >> [b, c]``."""
 
     def __init__(self, refs: list[NodeRef], pipeline: "Pipeline") -> None:
+        pipeline._validate_refs(refs)
         self.refs = refs
         self.pipeline = pipeline
 
@@ -826,17 +837,16 @@ class _MultiRef:
         """``[a, b] >> c`` -- fan-in: all connect to target."""
         if isinstance(other, list):
             pairs = list(zip(self.refs, other))
-            for ref, item in pairs:
-                target = ref._resolve(item)
-                self.pipeline._add_edge(ref.node_id, target.node_id)
-            return _MultiRef(
-                [ref._resolve(item) for ref, item in pairs],
-                self.pipeline,
-            )
+            with self.pipeline._transaction(other):
+                targets = [ref._resolve(item) for ref, item in pairs]
+                for (ref, _), target in zip(pairs, targets):
+                    self.pipeline._add_edge(ref.node_id, target.node_id)
+            return _MultiRef(targets, self.pipeline)
 
-        target = self.refs[0]._resolve(other)
-        for ref in self.refs:
-            self.pipeline._add_edge(ref.node_id, target.node_id)
+        with self.pipeline._transaction([other]):
+            target = self.refs[0]._resolve(other)
+            for ref in self.refs:
+                self.pipeline._add_edge(ref.node_id, target.node_id)
         return target
 
 
@@ -886,6 +896,11 @@ class _ConditionContext:
 # Decorator wrappers
 # ---------------------------------------------------------------------------
 
+def _validate_wrapper_inputs(pipeline: "Pipeline", inputs: tuple[NodeRef, ...]) -> None:
+    """Validate wrapper inputs before allocating an ID."""
+    pipeline._validate_refs(list(inputs))
+
+
 class _TaskWrapper:
     """Wraps a ``@task`` decorated function.  Calling it registers the node."""
 
@@ -896,12 +911,14 @@ class _TaskWrapper:
         pipeline: "Pipeline",
         config: dict[str, Any],
         package: str = "auto",
+        node_key: Optional[str] = None,
     ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
         self._config = config
         self._package = package
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         # Cache of the node created by the zero-arg "auto-call" path (used
@@ -912,10 +929,13 @@ class _TaskWrapper:
         # populate or consult this cache.
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         """Register this task as a node with edges from *inputs*."""
-        if not inputs and self._auto_ref is not None:
+        if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
+        _validate_wrapper_inputs(self._pipeline, inputs)
 
         func_source, package_meta = _package_task_source(self._func, self._package)
 
@@ -932,7 +952,9 @@ class _TaskWrapper:
         if package_meta is not None:
             config["package"] = package_meta
 
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config)
 
         for inp in inputs:
@@ -940,7 +962,7 @@ class _TaskWrapper:
                 self._pipeline._add_edge(inp.node_id, node_id)
 
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs:
+        if not inputs and node_key is None:
             self._auto_ref = ref
         return ref
 
@@ -957,6 +979,7 @@ class _TaskWrapper:
     def expand(
         self,
         key: Optional[Callable] = None,
+        node_key: Optional[str | "CollectionRef"] = None,
         **kwargs: "CollectionRef",
     ) -> "CollectionRef":
         """Fan this task out into one dynamic instance per item of an
@@ -977,6 +1000,9 @@ class _TaskWrapper:
                 reference is recorded (see :func:`_func_ref`); the actual
                 per-item keying happens server-side once backend support
                 for dynamic instances exists.
+            node_key: Logical node identity when passed a string. For
+                backward compatibility, a CollectionRef passed here is
+                treated as the expansion input named ``node_key``.
             **kwargs: Maps a task parameter name to the upstream
                 :class:`CollectionRef` driving expansion over that
                 parameter, e.g. ``parsed = parse.expand(file=files)``.
@@ -991,6 +1017,13 @@ class _TaskWrapper:
             backend support yet for actually scheduling dynamic per-item
             task instances or executing this expansion (brokoli-sdk#2).
         """
+        logical_node_key: Optional[str]
+        if isinstance(node_key, CollectionRef):
+            kwargs["node_key"] = node_key
+            logical_node_key = None
+        else:
+            logical_node_key = node_key
+
         if not kwargs:
             raise ValueError(
                 "expand() requires at least one keyword mapping a task "
@@ -1007,6 +1040,7 @@ class _TaskWrapper:
                     "pipeline), when prototyping IR shape ahead of "
                     "backend support."
                 )
+        self._pipeline._validate_refs(list(kwargs.values()))
 
         func_source, package_meta = _package_task_source(self._func, self._package)
         call_script = TASK_WRAPPER_TEMPLATE.format(
@@ -1029,7 +1063,10 @@ class _TaskWrapper:
         if package_meta is not None:
             config["package"] = package_meta
 
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name,
+            self._node_key if logical_node_key is None else logical_node_key,
+        )
         self._pipeline._add_node(
             node_id, "code", self._name, config,
             capabilities=["compute", "dynamic-expansion", "collection-output"],
@@ -1043,13 +1080,22 @@ class _TaskWrapper:
 class _ConditionWrapper:
     """Wraps a ``@condition`` decorated function."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline") -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
+        self._node_key = node_key
         self.__wrapped__ = func
 
-    def __call__(self, input_ref: NodeRef) -> _ConditionContext:
+    def __call__(
+        self, input_ref: NodeRef, node_key: Optional[str] = None
+    ) -> _ConditionContext:
         raise PipelineError(
             "@condition predicates are not supported by the runtime input "
             "contract. Use condition_node(..., expression=...) with "
@@ -1069,10 +1115,11 @@ class _BranchRef(NodeRef):
 
     def __rshift__(self, other: Any) -> NodeRef | _MultiRef:
         if isinstance(other, list):
-            refs = [self._resolve(item) for item in other]
-            for ref in refs:
-                self.pipeline._add_edge(self.node_id, ref.node_id)
-                self.pipeline._branches[self.node_id][self._branch].append(ref.node_id)
+            with self.pipeline._transaction(other):
+                refs = [self._resolve(item) for item in other]
+                for ref in refs:
+                    self.pipeline._add_edge(self.node_id, ref.node_id)
+                    self.pipeline._branches[self.node_id][self._branch].append(ref.node_id)
             return _MultiRef(refs, self.pipeline)
 
         ref = self._resolve(other)
@@ -1084,11 +1131,19 @@ class _BranchRef(NodeRef):
 class _SourceWrapper:
     """Wraps a ``@source`` decorated function. Registers as a source code node."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline", config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        config: dict[str, Any],
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
         self._config = config
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         # Sources take no input, so every call is an "auto-call" -- cache
@@ -1096,16 +1151,19 @@ class _SourceWrapper:
         # same wrapper instance is reused across multiple fan-out edges.
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self) -> NodeRef:
-        if self._auto_ref is not None:
+    def __call__(self, node_key: Optional[str] = None) -> NodeRef:
+        if node_key is None and self._auto_ref is not None:
             return self._auto_ref
         func_source = _extract_func_source(self._func)
         script = SOURCE_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config, capabilities=["source", "dataset-output"])
         ref = NodeRef(node_id, self._pipeline)
-        self._auto_ref = ref
+        if node_key is None:
+            self._auto_ref = ref
         return ref
 
     def __rshift__(self, other: Any) -> NodeRef | _MultiRef:
@@ -1115,28 +1173,41 @@ class _SourceWrapper:
 class _SinkWrapper:
     """Wraps a ``@sink`` decorated function. Registers as a sink code node."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline", config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        config: dict[str, Any],
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
         self._config = config
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef) -> NodeRef:
-        if not inputs and self._auto_ref is not None:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
+        if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
+        _validate_wrapper_inputs(self._pipeline, inputs)
         func_source = _extract_func_source(self._func)
         script = SINK_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config, capabilities=["sink"])
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs:
+        if not inputs and node_key is None:
             self._auto_ref = ref
         return ref
 
@@ -1149,27 +1220,39 @@ class _SinkWrapper:
 class _FilterWrapper:
     """Wraps a ``@filter`` decorated function. Registers as a code node that filters rows."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline") -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef) -> NodeRef:
-        if not inputs and self._auto_ref is not None:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
+        if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
+        _validate_wrapper_inputs(self._pipeline, inputs)
         func_source = _extract_func_source(self._func)
         script = FILTER_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config)
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs:
+        if not inputs and node_key is None:
             self._auto_ref = ref
         return ref
 
@@ -1182,27 +1265,39 @@ class _FilterWrapper:
 class _MapWrapper:
     """Wraps a ``@map`` decorated function. Registers as a code node that transforms each row."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline") -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef) -> NodeRef:
-        if not inputs and self._auto_ref is not None:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
+        if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
+        _validate_wrapper_inputs(self._pipeline, inputs)
         func_source = _extract_func_source(self._func)
         script = MAP_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config)
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs:
+        if not inputs and node_key is None:
             self._auto_ref = ref
         return ref
 
@@ -1215,18 +1310,29 @@ class _MapWrapper:
 class _ValidateWrapper:
     """Wraps a ``@validate`` decorated function. Registers as a quality-gate code node."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline", on_failure: str) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        on_failure: str,
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
         self._on_failure = on_failure
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef) -> NodeRef:
-        if not inputs and self._auto_ref is not None:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
+        if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
+        _validate_wrapper_inputs(self._pipeline, inputs)
         func_source = _extract_func_source(self._func)
         action = 'raise ValueError(f"Validation failed: {_message}")' if self._on_failure == "block" else ""
         script = VALIDATE_WRAPPER_TEMPLATE.format(
@@ -1235,13 +1341,15 @@ class _ValidateWrapper:
             on_failure_action=action,
         )
         config: dict[str, Any] = {"language": "python", "script": script}
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config)
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs:
+        if not inputs and node_key is None:
             self._auto_ref = ref
         return ref
 
@@ -1254,19 +1362,31 @@ class _ValidateWrapper:
 class _SensorWrapper:
     """Wraps a ``@sensor`` decorated function. Polls until the function returns True."""
 
-    def __init__(self, func: Callable, name: str, pipeline: "Pipeline", poll_interval: int, timeout: Any) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        name: str,
+        pipeline: "Pipeline",
+        poll_interval: int,
+        timeout: Any,
+        node_key: Optional[str] = None,
+    ) -> None:
         self._func = func
         self._name = name
         self._pipeline = pipeline
         self._poll_interval = poll_interval
         self._timeout = timeout
+        self._node_key = node_key
         self.__wrapped__ = func
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef) -> NodeRef:
-        if not inputs and self._auto_ref is not None:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
+        if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
+        _validate_wrapper_inputs(self._pipeline, inputs)
         func_source = _extract_func_source(self._func)
         # An explicit UNSET/None timeout means "poll forever" -- the
         # generated script skips its timeout check, and the node's
@@ -1283,13 +1403,15 @@ class _SensorWrapper:
         config: dict[str, Any] = {"language": "python", "script": script}
         if has_timeout:
             config["timeout"] = self._timeout + 60
-        node_id = _make_id(self._name)
+        node_id = self._pipeline._allocate_node_id(
+            self._name, self._node_key if node_key is None else node_key
+        )
         self._pipeline._add_node(node_id, "code", self._name, config)
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs:
+        if not inputs and node_key is None:
             self._auto_ref = ref
         return ref
 
@@ -1369,6 +1491,7 @@ class Pipeline:
         self._edges: list[tuple[str, str, bool | None]] = []
         self._branches: dict[str, dict[str, list[str]]] = {}
         self._node_order: list[str] = []
+        self._node_id_counters: dict[str, int] = {}
 
     def __repr__(self) -> str:
         return (
@@ -1386,6 +1509,78 @@ class Pipeline:
         Pipeline._current = None
 
     # -- DAG mutation ------------------------------------------------------
+
+    def _validate_refs(self, refs: list[NodeRef]) -> None:
+        """Require refs to be real nodes owned by this pipeline."""
+        for ref in refs:
+            if not isinstance(ref, NodeRef):
+                raise PipelineError(
+                    f"Expected a NodeRef input, got {type(ref).__name__}."
+                )
+            if ref.pipeline is not self:
+                raise PipelineError("Nodes from different pipelines cannot be connected.")
+            if ref.node_id not in self._nodes:
+                raise PipelineError(
+                    f"Node {ref.node_id!r} does not exist in its owning pipeline."
+                )
+
+    @contextmanager
+    def _transaction(self, items: list[Any]):
+        """Roll back graph, allocator, and lazy-wrapper state on failure."""
+        nodes_before = dict(self._nodes)
+        edges_before = list(self._edges)
+        order_before = list(self._node_order)
+        branches_before = {
+            node_id: {
+                branch: list(destinations)
+                for branch, destinations in branch_map.items()
+            }
+            for node_id, branch_map in self._branches.items()
+        }
+        counters_before = dict(self._node_id_counters)
+        cached_refs: list[tuple[Any, Optional[NodeRef]]] = []
+
+        def capture(item: Any) -> None:
+            if isinstance(item, (list, tuple)):
+                for child in item:
+                    capture(child)
+            elif hasattr(item, "_auto_ref"):
+                cached_refs.append((item, item._auto_ref))
+
+        capture(items)
+        try:
+            yield
+        except Exception:
+            self._nodes = nodes_before
+            self._edges = edges_before
+            self._node_order = order_before
+            self._branches = branches_before
+            self._node_id_counters = counters_before
+            for item, cached_ref in cached_refs:
+                item._auto_ref = cached_ref
+            raise
+
+    def _allocate_node_id(
+        self, name: str, node_key: Optional[str] = None
+    ) -> str:
+        """Allocate a deterministic logical node ID owned by this pipeline."""
+        if node_key is not None:
+            if not isinstance(node_key, str) or not _NODE_KEY_PATTERN.fullmatch(node_key):
+                raise PipelineError(
+                    "node_key must match ^[a-z][a-z0-9_-]{0,63}$ exactly"
+                )
+            if node_key in self._nodes:
+                raise PipelineError(f"Duplicate node id {node_key!r}.")
+            return node_key
+
+        base = _make_id(name)
+        counter = self._node_id_counters.get(base, 0)
+        while True:
+            counter += 1
+            candidate = f"{base}_{counter}"
+            if candidate not in self._nodes:
+                self._node_id_counters[base] = counter
+                return candidate
 
     def _add_node(
         self,
@@ -1418,6 +1613,8 @@ class Pipeline:
         self._node_order.append(node_id)
 
     def _add_edge(self, from_id: str, to_id: str, condition: bool | None = None) -> None:
+        if from_id not in self._nodes or to_id not in self._nodes:
+            raise PipelineError("Nodes from different pipelines cannot be connected.")
         if condition is not None and type(condition) is not bool:
             raise PipelineError("Edge condition must be true, false, or omitted.")
         for existing_from, existing_to, existing_condition in self._edges:

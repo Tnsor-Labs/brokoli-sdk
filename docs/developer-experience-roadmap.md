@@ -44,7 +44,9 @@ The backend decides how many page, partition, or mapped instances execute; where
 
 ### Deterministic compilation
 
-Node IDs currently include randomness. The compiler should produce stable logical identity with an ordered rule: an explicit user-supplied key wins; otherwise the function or node name qualified by a deterministic per-scope counter. Source position is never an identity input — a blank line would shift every line number, recreating the noisy-diff problem this fixes while *also* severing node identity, and identity now carries extra weight because the backend derives physical instance keys from logical node IDs (core ADR-015). Identity churn there does not make diffs noisy; it orphans every instance history.
+Logical node identity is now deterministic: an explicit `node_key` wins; otherwise the canonical display name is qualified by a per-name, per-pipeline counter. Source position is never an identity input. Same-name insertion can renumber later same-name nodes, so durable identities should use `node_key`. Upgrading from older releases causes a one-time change from their random IDs.
+
+This is only the deterministic-identity slice. It does not implement normalized semantic snapshots/diffs, the commands below, or the full issue #15 M1 scope.
 
 The normalized semantic representation excludes layout-only changes.
 

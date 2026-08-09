@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Optional, Any
 
-from brokoli.exceptions import ContextError, PipelineError
+from brokoli.exceptions import ContextError
 from brokoli.pagination import PaginationStrategy
 from brokoli.parsing import ParseError, parse_quality_rule
 from brokoli.pipeline import (
-    Pipeline, NodeRef, ConditionRef, _make_id, _MultiRef,
+    Pipeline, NodeRef, ConditionRef, _MultiRef,
     ArtifactRef, DatasetRef, ScalarRef,
     _build_union_node,
 )
@@ -65,6 +65,7 @@ def _register_node(
     config: dict,
     *inputs: NodeRef,
     ref_cls: type = NodeRef,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """Register a node in the current pipeline and connect inputs.
 
@@ -86,10 +87,8 @@ def _register_node(
         ContextError: If no pipeline context is active.
     """
     pipeline = _current_pipeline()
-    for inp in inputs:
-        if isinstance(inp, NodeRef) and inp.pipeline is not pipeline:
-            raise PipelineError("Nodes from different pipelines cannot be connected.")
-    node_id = _make_id(name)
+    pipeline._validate_refs(list(inputs))
+    node_id = pipeline._allocate_node_id(name, node_key)
     pipeline._add_node(node_id, node_type, name, config)
 
     for inp in inputs:
@@ -118,6 +117,7 @@ def source_db(
     retries: Any = UNSET,
     retry_backoff: str = "exponential",
     timeout: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
@@ -142,7 +142,9 @@ def source_db(
         optional["timeout"] = timeout
 
     config = _build_config({"query": query}, optional)
-    return _register_node("source_db", name, config, ref_cls=DatasetRef)
+    return _register_node(
+        "source_db", name, config, ref_cls=DatasetRef, node_key=node_key
+    )
 
 
 def source_api(
@@ -160,6 +162,7 @@ def source_api(
     records: Any = UNSET,
     value_path: Any = UNSET,
     pagination: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -272,13 +275,16 @@ def source_api(
         "scalar": ScalarRef,
         "artifact": ArtifactRef,
     }.get(response, DatasetRef)
-    return _register_node("source_api", name, config, ref_cls=ref_cls)
+    return _register_node(
+        "source_api", name, config, ref_cls=ref_cls, node_key=node_key
+    )
 
 
 def source_file(
     name: str,
     path: str = "",
     format: str = "csv",
+    node_key: Optional[str] = None,
 ) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
 
@@ -288,7 +294,9 @@ def source_file(
             data = source_file("Read users", path="/data/users.csv", format="csv")
     """
     config = _build_config({"path": path, "format": format}, {})
-    return _register_node("source_file", name, config, ref_cls=DatasetRef)
+    return _register_node(
+        "source_file", name, config, ref_cls=DatasetRef, node_key=node_key
+    )
 
 
 # ===================================================================
@@ -363,6 +371,7 @@ def transform(
     name: str,
     input: Optional[NodeRef] = None,
     rules: list | None = None,
+    node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Transform data -- filter, sort, rename, aggregate, deduplicate.
 
@@ -396,7 +405,10 @@ def transform(
     if rules:
         config["rules"] = _parse_transform_rules(list(rules))
 
-    return _register_node("transform", name, config, *_input_args(input), ref_cls=DatasetRef)
+    return _register_node(
+        "transform", name, config, *_input_args(input),
+        ref_cls=DatasetRef, node_key=node_key,
+    )
 
 
 def join(
@@ -405,6 +417,7 @@ def join(
     right: Optional[NodeRef] = None,
     on: str = "",
     how: str = "inner",
+    node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Join two datasets -- inner, left, right, or full.
 
@@ -431,7 +444,9 @@ def join(
         args.append(left)
     if right is not None:
         args.append(right)
-    return _register_node("join", name, config, *args, ref_cls=DatasetRef)
+    return _register_node(
+        "join", name, config, *args, ref_cls=DatasetRef, node_key=node_key
+    )
 
 
 def _parse_quality_rules(rules: list) -> list:
@@ -455,6 +470,7 @@ def quality_check(
     name: str,
     input: Optional[NodeRef] = None,
     rules: list | None = None,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """Quality check -- validate data against rules.
 
@@ -478,7 +494,9 @@ def quality_check(
     if rules:
         config["rules"] = _parse_quality_rules(list(rules))
 
-    return _register_node("quality_check", name, config, *_input_args(input))
+    return _register_node(
+        "quality_check", name, config, *_input_args(input), node_key=node_key
+    )
 
 
 def code(
@@ -487,6 +505,7 @@ def code(
     language: str = "python",
     script: str = "",
     python_path: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """Custom code node -- run Python (or other) scripts.
 
@@ -505,7 +524,9 @@ def code(
         {"language": language, "script": script},
         {"python_path": python_path},
     )
-    return _register_node("code", name, config, *_input_args(input))
+    return _register_node(
+        "code", name, config, *_input_args(input), node_key=node_key
+    )
 
 
 # ===================================================================
@@ -520,6 +541,7 @@ def sink_db(
     conn_id: Any = UNSET,
     uri: Any = UNSET,
     retries: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """Database sink -- write data to a table.
 
@@ -538,7 +560,9 @@ def sink_db(
         optional["max_retries"] = retries
 
     config = _build_config({"table": table, "mode": mode}, optional)
-    return _register_node("sink_db", name, config, *_input_args(input))
+    return _register_node(
+        "sink_db", name, config, *_input_args(input), node_key=node_key
+    )
 
 
 def sink_file(
@@ -547,6 +571,7 @@ def sink_file(
     path: str = "",
     format: str = "csv",
     compress: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """File sink -- write data to CSV, JSON, Parquet, etc.
 
@@ -561,7 +586,9 @@ def sink_file(
         {"path": path, "format": format},
         {"compress": compress},
     )
-    return _register_node("sink_file", name, config, *_input_args(input))
+    return _register_node(
+        "sink_file", name, config, *_input_args(input), node_key=node_key
+    )
 
 
 def sink_api(
@@ -571,6 +598,7 @@ def sink_api(
     method: str = "POST",
     body: Any = UNSET,
     headers: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """API sink -- send data to an HTTP endpoint.
 
@@ -587,7 +615,9 @@ def sink_api(
         "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
     }
     config = _build_config({"url": url, "method": method}, optional)
-    return _register_node("sink_api", name, config, *_input_args(input))
+    return _register_node(
+        "sink_api", name, config, *_input_args(input), node_key=node_key
+    )
 
 
 # ===================================================================
@@ -603,6 +633,7 @@ def migrate(
     mode: str = "append",
     source_conn_id: Any = UNSET,
     target_conn_id: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Database migration -- copy data between two databases.
 
@@ -627,7 +658,9 @@ def migrate(
             "dest_conn_id": target_conn_id,
         },
     )
-    return _register_node("migrate", name, config, ref_cls=DatasetRef)
+    return _register_node(
+        "migrate", name, config, ref_cls=DatasetRef, node_key=node_key
+    )
 
 
 def dbt(
@@ -639,6 +672,7 @@ def dbt(
     profiles_dir: Any = UNSET,
     vars: Any = UNSET,
     input: Optional[NodeRef] = None,
+    node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Run dbt commands -- run, test, build, seed, snapshot.
 
@@ -663,7 +697,10 @@ def dbt(
             "vars": vars,
         },
     )
-    return _register_node("dbt", name, config, *_input_args(input), ref_cls=DatasetRef)
+    return _register_node(
+        "dbt", name, config, *_input_args(input),
+        ref_cls=DatasetRef, node_key=node_key,
+    )
 
 
 def notify(
@@ -673,6 +710,7 @@ def notify(
     webhook_url: str = "",
     message: Any = UNSET,
     channel: Any = UNSET,
+    node_key: Optional[str] = None,
 ) -> NodeRef:
     """Send a notification -- Slack, webhook, or email.
 
@@ -692,13 +730,16 @@ def notify(
             "channel": channel,
         },
     )
-    return _register_node("notify", name, config, *_input_args(input))
+    return _register_node(
+        "notify", name, config, *_input_args(input), node_key=node_key
+    )
 
 
 def condition_node(
     name: str,
     expression: str = "",
     input: Optional[NodeRef] = None,
+    node_key: Optional[str] = None,
 ) -> ConditionRef:
     """If/else branch based on a data condition.
 
@@ -713,7 +754,8 @@ def condition_node(
     """
     config = _build_config({"expression": expression}, {})
     return _register_node(
-        "condition", name, config, *_input_args(input), ref_cls=ConditionRef
+        "condition", name, config, *_input_args(input),
+        ref_cls=ConditionRef, node_key=node_key,
     )
 
 
@@ -731,14 +773,20 @@ def parallel(*nodes: NodeRef) -> _MultiRef | NodeRef:
     pipeline = Pipeline._current
     refs = [n for n in nodes if isinstance(n, NodeRef)]
 
+    owner = pipeline or (refs[0].pipeline if refs else None)
+    if owner is not None:
+        owner._validate_refs(refs)
+
     if len(refs) == 1:
         return refs[0]
-    if pipeline is not None:
-        return _MultiRef(refs, pipeline)
+    if owner is not None:
+        return _MultiRef(refs, owner)
     return refs[0] if refs else nodes[0]
 
 
-def union(name: str, *refs: NodeRef) -> DatasetRef:
+def union(
+    name: str, *refs: NodeRef, node_key: Optional[str] = None
+) -> DatasetRef:
     """Combine multiple dataset/collection refs' manifests into one dataset.
 
     Compiles to a single ``union`` IR node (capabilities: ``compute``,
@@ -764,4 +812,4 @@ def union(name: str, *refs: NodeRef) -> DatasetRef:
     if not refs:
         raise ValueError("union() requires at least one ref to combine")
     pipeline = _current_pipeline()
-    return _build_union_node(pipeline, name, list(refs))
+    return _build_union_node(pipeline, name, list(refs), node_key=node_key)
