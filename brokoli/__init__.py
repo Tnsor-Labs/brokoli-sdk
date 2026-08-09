@@ -23,6 +23,7 @@ from brokoli.pagination import (
     offset_pages, cursor_pages, numbered_pages,
     next_link_pages, link_header_pages,
 )
+from brokoli.ir import canonical_json, diff_ir, normalize_ir, render_ir
 
 __version__ = "0.2.0"
 __all__ = [
@@ -46,4 +47,6 @@ __all__ = [
     # source_api pagination DSL (declarative config only -- see brokoli.pagination)
     "offset_pages", "cursor_pages", "numbered_pages",
     "next_link_pages", "link_header_pages",
+    # Normalized comparison artifacts
+    "normalize_ir", "canonical_json", "render_ir", "diff_ir",
 ]

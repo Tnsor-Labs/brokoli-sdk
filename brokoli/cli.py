@@ -9,11 +9,14 @@ import os
 import sys
 import urllib.request
 import urllib.error
+import urllib.parse
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from brokoli.compatibility import preflight_server_compatibility
 from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
+from brokoli.ir import canonical_json, diff_ir, normalize_ir
 
 REQUEST_TIMEOUT = 10
 
@@ -205,13 +208,260 @@ def _output_pipeline(pipeline: Any, fmt: str) -> str:
     return pipeline.to_yaml()
 
 
-def compile_cmd(args: argparse.Namespace) -> None:
+def compile_cmd(args: argparse.Namespace) -> int:
     """Compile a pipeline file to YAML (default) or JSON."""
     fmt = getattr(args, "format", "yaml")
+    pipelines: list[Any] = []
     for f in _collect_files(args.file):
-        pipelines = load_pipeline_from_file(str(f))
+        pipelines.extend(load_pipeline_from_file(str(f)))
+
+    if getattr(args, "check", False):
+        from brokoli.validation import validate_pipeline
+
+        valid = True
         for pipeline in pipelines:
-            print(_output_pipeline(pipeline, fmt))
+            print(f"Checking: {pipeline.name}")
+            result = validate_pipeline(pipeline)
+            result.print_report()
+            serializable = True
+            try:
+                canonical_json(normalize_ir(pipeline.to_json()))
+            except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+                print(f"  ✗ [ERROR] Normalized IR is not canonical JSON: {exc}")
+                serializable = False
+            valid = valid and result.valid and serializable
+            print()
+        if valid:
+            print("All pipelines valid")
+            return 0
+        print("Pipeline check failed")
+        return 1
+
+    if getattr(args, "normalized", False):
+        snapshots = [pipeline.to_normalized_json() for pipeline in pipelines]
+        output: Any = snapshots[0] if len(snapshots) == 1 else snapshots
+        print(canonical_json(output), end="")
+        return 0
+
+    for pipeline in pipelines:
+        print(_output_pipeline(pipeline, fmt))
+    return 0
+
+
+def _get_json(url: str, auth_header: str) -> Any:
+    """GET and decode a server JSON response as an operational CLI request."""
+    request = urllib.request.Request(url, headers=_make_headers(auth_header))
+    try:
+        response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT)
+        return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise DeployError("diff", exc.code, body) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        reason = getattr(exc, "reason", str(exc))
+        raise DeployError("diff", 0, f"Could not reach server: {reason}") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise DeployError("diff", 0, f"Malformed JSON response from {url}: {exc}") from exc
+
+
+def _list_remote_pipelines(server: str, auth_header: str) -> list[dict[str, Any]]:
+    """List all remote pipelines across legacy and cursor response shapes."""
+    pipelines: list[dict[str, Any]] = []
+    after: str | None = None
+    seen_cursors: set[str] = set()
+
+    while True:
+        query = {"limit": "100"}
+        if after is not None:
+            query["after"] = after
+        payload = _get_json(
+            f"{server}/api/pipelines?{urllib.parse.urlencode(query)}",
+            auth_header,
+        )
+
+        if isinstance(payload, list):
+            items = payload
+            has_next = False
+            cursor = None
+        elif isinstance(payload, dict):
+            items = payload.get("items")
+            has_next = payload.get("has_next")
+            cursor = payload.get("cursor")
+            if not isinstance(items, list) or not isinstance(has_next, bool):
+                raise DeployError(
+                    "diff", 0, "Malformed pipeline list response: expected items and has_next",
+                )
+        else:
+            raise DeployError(
+                "diff", 0, "Malformed pipeline list response: expected a list or object",
+            )
+
+        if not all(isinstance(item, dict) for item in items):
+            raise DeployError("diff", 0, "Malformed pipeline list response: invalid item")
+        pipelines.extend(items)
+
+        if not has_next:
+            return pipelines
+        if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            raise DeployError("diff", 0, "Malformed pipeline list response: invalid cursor")
+        seen_cursors.add(cursor)
+        after = cursor
+
+
+def _match_remote_pipeline(
+    pipeline: Any, remote: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Match by exact logical ID, falling back to exact name."""
+    id_matches = [
+        item for item in remote if item.get("pipeline_id") == pipeline.pipeline_id
+    ]
+    matches = id_matches or [item for item in remote if item.get("name") == pipeline.name]
+    if len(matches) > 1:
+        raise DeployError(
+            pipeline.name,
+            0,
+            "Ambiguous remote match; pipeline_id or name matched multiple pipelines",
+        )
+    return matches[0] if matches else None
+
+
+def _validate_pipeline_detail(detail: Any, pipeline_name: str) -> dict[str, Any]:
+    """Require the minimal full pipeline IR shape needed for semantic diff."""
+    if not isinstance(detail, dict):
+        raise DeployError(
+            pipeline_name, 0, "Malformed pipeline detail response: expected an object",
+        )
+    if not isinstance(detail.get("name"), str):
+        raise DeployError(
+            pipeline_name, 0, "Malformed pipeline detail response: name must be a string",
+        )
+    for field in ("nodes", "edges"):
+        if field not in detail or not (
+            detail[field] is None or isinstance(detail[field], list)
+        ):
+            raise DeployError(
+                pipeline_name,
+                0,
+                f"Malformed pipeline detail response: {field} must be a list or null",
+            )
+
+    validated = dict(detail)
+    if isinstance(detail["nodes"], list):
+        nodes: list[dict[str, Any]] = []
+        for index, node in enumerate(detail["nodes"]):
+            if not isinstance(node, Mapping):
+                raise DeployError(
+                    pipeline_name,
+                    0,
+                    f"Malformed pipeline detail response: nodes[{index}] must be an object",
+                )
+            node_copy = dict(node)
+            if not isinstance(node_copy.get("id"), str) or not node_copy["id"]:
+                raise DeployError(
+                    pipeline_name,
+                    0,
+                    f"Malformed pipeline detail response: nodes[{index}].id must be a nonempty string",
+                )
+            for field in ("type", "name"):
+                if not isinstance(node_copy.get(field), str):
+                    raise DeployError(
+                        pipeline_name,
+                        0,
+                        f"Malformed pipeline detail response: nodes[{index}].{field} must be a string",
+                    )
+            config = node_copy.get("config")
+            if config is None:
+                node_copy["config"] = {}
+            elif not isinstance(config, Mapping):
+                raise DeployError(
+                    pipeline_name,
+                    0,
+                    f"Malformed pipeline detail response: nodes[{index}].config must be an object",
+                )
+            else:
+                node_copy["config"] = dict(config)
+            if (
+                "capabilities" in node_copy
+                and node_copy["capabilities"] is not None
+                and (
+                    not isinstance(node_copy["capabilities"], list)
+                    or not all(
+                        isinstance(capability, str)
+                        for capability in node_copy["capabilities"]
+                    )
+                )
+            ):
+                raise DeployError(
+                    pipeline_name,
+                    0,
+                    f"Malformed pipeline detail response: nodes[{index}].capabilities must be a list of strings",
+                )
+            nodes.append(node_copy)
+        validated["nodes"] = nodes
+
+    if isinstance(detail["edges"], list):
+        edges: list[dict[str, Any]] = []
+        for index, edge in enumerate(detail["edges"]):
+            if not isinstance(edge, Mapping):
+                raise DeployError(
+                    pipeline_name,
+                    0,
+                    f"Malformed pipeline detail response: edges[{index}] must be an object",
+                )
+            edge_copy = dict(edge)
+            for field in ("from", "to"):
+                if not isinstance(edge_copy.get(field), str):
+                    raise DeployError(
+                        pipeline_name,
+                        0,
+                        f"Malformed pipeline detail response: edges[{index}].{field} must be a string",
+                    )
+            if "condition" in edge_copy and type(edge_copy["condition"]) is not bool:
+                raise DeployError(
+                    pipeline_name,
+                    0,
+                    f"Malformed pipeline detail response: edges[{index}].condition must be a boolean",
+                )
+            edges.append(edge_copy)
+        validated["edges"] = edges
+
+    return validated
+
+
+def diff_cmd(args: argparse.Namespace) -> int:
+    """Compare local normalized pipeline IR with full server definitions."""
+    server = args.server.rstrip("/")
+    auth_header = _auth_header_from_args(args)
+    pipelines: list[Any] = []
+    for f in _collect_files(args.file):
+        pipelines.extend(load_pipeline_from_file(str(f)))
+
+    remote = _list_remote_pipelines(server, auth_header)
+    different = False
+    for pipeline in pipelines:
+        local_ir = pipeline.to_json()
+        match = _match_remote_pipeline(pipeline, remote)
+        remote_ir = None
+        if match is not None:
+            remote_id = match.get("id")
+            if not isinstance(remote_id, str) or not remote_id:
+                raise DeployError(pipeline.name, 0, "Matched pipeline has no valid server id")
+            detail_url = f"{server}/api/pipelines/{urllib.parse.quote(remote_id, safe='')}"
+            detail = _get_json(detail_url, auth_header)
+            remote_ir = _validate_pipeline_detail(detail, pipeline.name)
+
+        difference = diff_ir(
+            local_ir,
+            remote_ir,
+            local_label=f"local/{pipeline.name}",
+            remote_label=f"server/{pipeline.name}",
+        )
+        if difference:
+            print(difference, end="")
+            different = True
+        else:
+            print(f"No semantic changes: {pipeline.name}")
+    return 1 if different else 0
 
 
 def export(args: argparse.Namespace) -> None:
@@ -262,7 +512,25 @@ def main() -> None:
     cp = sub.add_parser("compile", help="Compile pipeline to YAML (default) or JSON")
     cp.add_argument("file", help="Python file containing pipeline(s)")
     cp.add_argument("-f", "--format", choices=["yaml", "json"], default="yaml", help="Output format (default: yaml)")
+    compile_mode = cp.add_mutually_exclusive_group()
+    compile_mode.add_argument(
+        "--normalized",
+        action="store_true",
+        help="Output canonical normalized JSON (overrides --format)",
+    )
+    compile_mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate and normalize locally without emitting IR",
+    )
     cp.set_defaults(func=compile_cmd)
+
+    # diff
+    df = sub.add_parser("diff", help="Compare local IR with server pipeline definitions")
+    df.add_argument("file", help="Python file or directory containing pipelines")
+    df.add_argument("--server", required=True, help="Brokoli server URL")
+    df.add_argument("--api-key", default="", help="API key for authentication")
+    df.set_defaults(func=diff_cmd)
 
     # export
     ep = sub.add_parser("export", help="Export pipeline as YAML (default) or JSON")
@@ -277,7 +545,9 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        args.func(args)
+        status = args.func(args)
+        if isinstance(status, int) and status != 0:
+            sys.exit(status)
     except ValidationError as exc:
         print(f"\nValidation failed: {exc}")
         sys.exit(1)

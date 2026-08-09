@@ -329,7 +329,7 @@ quality_check("Validate", data, rules=[
 
 ```bash
 # Deploy pipeline to server (validates before pushing)
-brokoli deploy pipeline.py --server http://localhost:9900 --token $TOKEN
+brokoli deploy pipeline.py --server http://localhost:9900 --api-key $API_KEY
 
 # Deploy all pipelines in a directory
 brokoli deploy pipelines/ --server http://localhost:9900
@@ -339,6 +339,15 @@ brokoli validate pipeline.py --server http://localhost:9900
 
 # Export pipeline as JSON (no server needed)
 brokoli export pipeline.py -o pipeline.json
+
+# Write a canonical normalized JSON comparison snapshot
+brokoli compile pipeline.py --normalized > pipeline.snapshot.json
+
+# Validate and normalize locally without printing IR or calling the server
+brokoli compile pipeline.py --check
+
+# Compare local pipeline semantics with deployed definitions
+brokoli diff pipeline.py --server http://localhost:9900 --api-key $API_KEY
 
 # Skip validation (not recommended)
 brokoli deploy pipeline.py --skip-validation
@@ -353,6 +362,19 @@ block by default, including when `--skip-validation` is used. The
 `--allow-legacy-server` escape hatch only permits a trusted server whose
 capability endpoint is unavailable; it cannot override a version mismatch
 reported by a reachable server.
+
+Normalized snapshots are stable comparison artifacts, not deployment payloads.
+They omit server metadata and layout and normalize only semantically unordered
+values or equivalent defaults. Node, capability, tag, and `depends_on` order is
+normalized; edge order is preserved because it can define input order.
+`--normalized` always emits JSON and overrides the compile format; multiple
+pipelines are emitted as one JSON array. Use the
+ordinary deploy/export paths for wire output. Assign explicit `node_key` values
+to important nodes for durable snapshots, especially where same-name node
+insertion could renumber generated IDs.
+
+`compile`, `diff`, and other file-based commands import pipeline modules.
+Imports still execute module top-level code and its side effects.
 
 ### Validation
 
@@ -376,7 +398,7 @@ $ brokoli deploy pipeline.py
 
 ```bash
 # Via CLI flag
-brokoli deploy pipeline.py --token eyJhbG...
+brokoli deploy pipeline.py --api-key eyJhbG...
 
 # Via environment variable
 export BROKOLI_TOKEN=eyJhbG...
