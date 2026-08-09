@@ -304,7 +304,17 @@ brokoli export pipeline.py -o pipeline.json
 
 # Skip validation (not recommended)
 brokoli deploy pipeline.py --skip-validation
+
+# Trusted legacy servers without GET /api/capabilities only
+brokoli deploy pipeline.py --allow-legacy-server
 ```
+
+`deploy` and `validate` verify the target server's supported pipeline IR
+versions before ordinary validation or persistence. Compatibility failures
+block by default, including when `--skip-validation` is used. The
+`--allow-legacy-server` escape hatch only permits a trusted server whose
+capability endpoint is unavailable; it cannot override a version mismatch
+reported by a reachable server.
 
 ### Validation
 
