@@ -36,7 +36,7 @@ The backend decides how many page, partition, or mapped instances execute; where
 | Collection union | Partial: in-memory dataset union | Keep available; distinguish it from future manifest union |
 | Dataset map/filter | Compile-only | Mark experimental until partition execution exists |
 | Conditions | Available with composition gaps | Fix or reject nested branch inputs; serialize branch intent |
-| Operational CLI | Minimal | Add diff/run/status/logs/cancel/retry/backfill |
+| Operational CLI | Diff available | Add run/status/logs/cancel/retry/backfill |
 | Local testing | Function tests only | Add graph snapshots and backend-backed local harness |
 | Static typing | Partial annotations | Ship `py.typed`, type-check CI, parameter/data contracts |
 
@@ -46,16 +46,18 @@ The backend decides how many page, partition, or mapped instances execute; where
 
 Logical node identity is now deterministic: an explicit `node_key` wins; otherwise the canonical display name is qualified by a per-name, per-pipeline counter. Source position is never an identity input. Same-name insertion can renumber later same-name nodes, so durable identities should use `node_key`. Upgrading from older releases causes a one-time change from their random IDs.
 
-This is only the deterministic-identity slice. It does not implement normalized semantic snapshots/diffs, the commands below, or the full issue #15 M1 scope.
+Deterministic identity and the normalized snapshot/diff slice are complete. Canonical normalized JSON is available through `Pipeline.to_normalized_json()` and `brokoli compile --normalized`; local `compile --check` and server-backed `diff` are also available. These are comparison artifacts rather than deployment payloads. This does not complete the full issue #15 M1 scope.
 
 The normalized semantic representation excludes layout-only changes.
 
-Required commands:
+Available commands:
 
 ```bash
 brokoli compile pipeline.py --check
 brokoli diff pipeline.py --server "$BROKOLI_URL"
 ```
+
+Pipeline files are still imported and execute module top-level code. Use explicit `node_key` values for durable snapshots where generated same-name IDs could be renumbered.
 
 ### Runtime honesty
 
@@ -87,7 +89,7 @@ The third layer must exercise Go behavior so local success predicts deployed suc
 The SDK CLI should become the complete client for routine pipeline operations:
 
 ```bash
-brokoli diff pipeline.py
+brokoli diff pipeline.py --server "$BROKOLI_URL"
 brokoli run daily-orders --param ds=2026-08-09
 brokoli status RUN_ID
 brokoli logs --follow RUN_ID

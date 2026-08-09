@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import copy
 from contextlib import contextmanager
 import inspect
 import json
@@ -1641,7 +1642,7 @@ class Pipeline:
                 "id": node["id"],
                 "type": node["type"],
                 "name": node["name"],
-                "config": node["config"],
+                "config": copy.deepcopy(node["config"]),
                 "capabilities": list(node.get("capabilities") or _capabilities_for(node["type"])),
                 "position": positions.get(nid, {"x": 0, "y": 0}),
             }
@@ -1684,6 +1685,12 @@ class Pipeline:
             result["webhook_token"] = ""  # server will generate
 
         return result
+
+    def to_normalized_json(self) -> dict[str, Any]:
+        """Return normalized IR for snapshots and semantic comparisons."""
+        from brokoli.ir import normalize_ir
+
+        return normalize_ir(self.to_json())
 
     def to_yaml(self) -> str:
         """Convert pipeline to YAML format.
