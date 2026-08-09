@@ -144,19 +144,21 @@ def clean(rows):
 > container `image=` isn't supported yet — both need backend runtime/image
 > dispatch that doesn't exist yet.
 
-### @condition — Branching
+### Conditional branching
 
-Route data to different paths based on a Python function returning bool.
+Use a runtime-supported condition expression and label each outgoing branch
+explicitly. Conditional pipelines emit IR 2.1; ordinary pipelines remain on
+IR 2.0.
 
 ```python
-@condition("Quality OK?")
-def is_valid(df) -> bool:
-    return len(df) > 100 and all(r.get("id") for r in df)
-
-with is_valid(data) as (good, bad):
-    good >> sink_db("Production", table="output", conn_id="prod")
-    bad >> sink_file("Quarantine", path="/tmp/quarantine.csv")
+gate = condition_node("Has rows?", expression="row_count > 100", input=data)
+gate.when(sink_db("Production", table="output", conn_id="prod"))
+gate.otherwise(sink_file("Quarantine", path="/tmp/quarantine.csv"))
 ```
+
+`@condition` predicates are rejected until the runtime IR can distinguish a
+predicate result from the unchanged branch payload. Nested conditional routing
+is also rejected instead of compiling an ambiguous graph.
 
 ### Operators — Chaining & Fan-out
 
@@ -185,7 +187,7 @@ source >> [branch_a, branch_b] >> merge >> output
 > you author and validate the IR shape today; execution is
 > physical-planner work that hasn't landed yet.
 
-Node-building functions return one of four typed references (all are
+Node-building functions return one of five typed references (all are
 `NodeRef` subclasses, so `>>`, fan-out/fan-in, and everything else above
 keeps working unchanged):
 
@@ -200,11 +202,13 @@ keeps working unchanged):
   known until the pipeline runs (e.g. one entry per file/page). Not
   returned by any built-in source yet — only produced by
   `@task.expand()` below.
+- **`ConditionRef`** — a condition node with `.when()` and `.otherwise()`
+  methods for explicit true/false routing.
 
-Sinks, `quality_check`, `code`, `notify`, and `condition_node` keep
-returning a plain `NodeRef` — their output shape is either a
+Sinks, `quality_check`, `code`, and `notify` keep returning a plain
+`NodeRef` — their output shape is either a
 side-effect/gate or genuinely ambiguous (a `code` node can produce
-anything), so they aren't force-fit into one of the four typed kinds.
+anything), so they aren't force-fit into one of the typed kinds.
 
 #### `.expand()` — dynamic fan-out
 
@@ -405,7 +409,7 @@ See [`examples/`](examples/) for architecture reference pipelines:
 Python SDK          Brokoli Server          Visual Editor
 ┌──────────┐       ┌──────────────┐       ┌──────────────┐
 │ @task    │       │              │       │              │
-│ @condition│──────▶│  Pipeline    │──────▶│  Drag & Drop │
+│ condition │──────▶│  Pipeline    │──────▶│  Drag & Drop │
 │ >>       │deploy │  Engine      │render │  Canvas      │
 │ quality_ │       │  + Profiling │       │  + Preview   │
 │ check()  │       │  + Alerts    │       │  + Profiling │

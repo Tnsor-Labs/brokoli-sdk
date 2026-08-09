@@ -7,6 +7,7 @@ from brokoli import source_db, source_api, source_file
 from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
 from brokoli import dbt, notify, migrate, condition_node
+from brokoli.exceptions import PipelineError
 
 
 class TestPipelineBasic:
@@ -262,7 +263,7 @@ class TestTaskDecorator:
 
 
 class TestConditionDecorator:
-    def test_condition_basic(self):
+    def test_condition_rejected_before_graph_mutation(self):
         with Pipeline("test") as p:
             src = source_db("Source", query="SELECT 1")
 
@@ -270,19 +271,11 @@ class TestConditionDecorator:
             def has_data(df) -> bool:
                 return len(df) > 0
 
-            with has_data(src) as (good, bad):
-                good >> sink_db("OK", table="good")
-                bad >> sink_file("Bad", path="/bad.csv")
+            with pytest.raises(PipelineError, match="runtime input contract"):
+                has_data(src)
 
-        data = p.to_json()
-        assert len(data["nodes"]) >= 4  # source + eval code + condition + at least 1 sink
-        # Find condition node
-        cond_nodes = [n for n in data["nodes"] if n["type"] == "condition"]
-        assert len(cond_nodes) == 1
-        assert cond_nodes[0]["config"]["expression"] == "row_count > 0"
-        # The eval code node should have the function
-        code_nodes = [n for n in data["nodes"] if n["type"] == "code"]
-        assert any("def has_data" in n["config"].get("script", "") for n in code_nodes)
+        assert len(p._nodes) == 1
+        assert p._edges == []
 
 
 class TestAutoLayout:
@@ -372,21 +365,17 @@ class TestComplexPipeline:
 
             checked = quality_check("Validate", enriched, rules=["unique(id)", "not_null(email)"])
 
-            @condition("Has data?")
-            def has_data(df) -> bool:
-                return len(df) > 0
-
-            with has_data(checked) as (good, bad):
-                good >> [
-                    sink_db("Write DWH", table="customer_360"),
-                    sink_file("S3 Backup", path="/backup/c360.csv"),
-                ]
-                bad >> sink_api("Alert", url="https://hooks.slack.com")
+            gate = condition_node("Has data?", "row_count > 0", checked)
+            gate.when([
+                sink_db("Write DWH", table="customer_360"),
+                sink_file("S3 Backup", path="/backup/c360.csv"),
+            ])
+            gate.otherwise(sink_api("Alert", url="https://hooks.slack.com"))
 
         data = p.to_json()
-        # 3 sources + 2 joins + quality + condition + 3 sinks = 9+ nodes
-        assert len(data["nodes"]) >= 9
-        assert len(data["edges"]) >= 8
+        assert len(data["nodes"]) == 10
+        assert len(data["edges"]) == 9
+        assert data["ir_version"] == "2.1"
         json.dumps(data)  # serializable
 
 
@@ -477,7 +466,122 @@ class TestNewNodeTypes:
         assert len(data["nodes"]) == 2
         node = next(n for n in data["nodes"] if n["type"] == "condition")
         assert node["config"]["expression"] == "row_count > 0"
+        assert data["ir_version"] == "2.0"
         json.dumps(data)
+
+    def test_condition_node_serializes_true_false_and_fanout(self):
+        with Pipeline("conditional") as p:
+            src = source_db("Fetch", query="SELECT * FROM t")
+            gate = condition_node("Has Data?", "row_count > 0", src)
+            yes_a = sink_db("Primary", table="events")
+            yes_b = sink_file("Backup", path="/events.csv")
+            no = notify("Empty", webhook_url="https://example.test/hook")
+            gate.when([yes_a, yes_b])
+            gate.otherwise(no)
+
+        data = p.to_json()
+        assert data["ir_version"] == "2.1"
+        edges = {(edge["from"], edge["to"]): edge for edge in data["edges"]}
+        assert "condition" not in edges[(src.node_id, gate.node_id)]
+        assert edges[(gate.node_id, yes_a.node_id)]["condition"] is True
+        assert edges[(gate.node_id, yes_b.node_id)]["condition"] is True
+        assert edges[(gate.node_id, no.node_id)]["condition"] is False
+
+        import yaml
+
+        yaml_edges = yaml.safe_load(p.to_yaml())["edges"]
+        assert any(edge.get("condition") is True for edge in yaml_edges)
+        assert any(edge.get("condition") is False for edge in yaml_edges)
+
+    def test_condition_node_rejects_missing_input_and_expression(self):
+        with Pipeline("conditional"):
+            no_input = condition_node("No input", "always_true")
+            with pytest.raises(PipelineError, match="exactly one input"):
+                no_input.when(notify("Target", webhook_url="https://example.test"))
+
+        with Pipeline("conditional"):
+            src = source_db("Fetch", query="SELECT 1")
+            no_expression = condition_node("No expression", input=src)
+            with pytest.raises(PipelineError, match="non-empty expression"):
+                no_expression.when(notify("Target", webhook_url="https://example.test"))
+
+    def test_condition_node_rejects_nested_routing(self):
+        with Pipeline("conditional"):
+            src = source_db("Fetch", query="SELECT 1")
+            outer = condition_node("Outer", "always_true", src)
+            inner = condition_node("Inner", "always_false", src)
+            with pytest.raises(PipelineError, match="Nested conditional routing"):
+                outer.when(inner)
+
+        with Pipeline("conditional"):
+            src = source_db("Fetch", query="SELECT 1")
+            outer = condition_node("Outer", "always_true", src)
+            inner = condition_node("Inner", "always_false", outer)
+            with pytest.raises(PipelineError, match="Nested conditional routing"):
+                inner.otherwise(notify("Target", webhook_url="https://example.test"))
+
+    def test_condition_node_rejects_cross_pipeline_input(self):
+        with Pipeline("first") as first:
+            src = source_db("Fetch", query="SELECT 1")
+
+        with Pipeline("second") as second:
+            with pytest.raises(PipelineError, match="different pipelines"):
+                condition_node("Gate", "always_true", src)
+
+        assert len(first._nodes) == 1
+        assert second._nodes == {}
+        assert second._edges == []
+
+    def test_condition_branch_addition_is_atomic(self):
+        with Pipeline("conditional") as p:
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "always_true", src)
+            true_target = notify("True", webhook_url="https://example.test/true")
+            untouched = notify("Untouched", webhook_url="https://example.test/untouched")
+            gate.when(true_target)
+
+            with pytest.raises(PipelineError, match="multiple branches"):
+                gate.otherwise([untouched, true_target])
+            with pytest.raises(PipelineError, match="at least one destination"):
+                gate.otherwise([])
+
+        assert not any(
+            from_id == gate.node_id and to_id == untouched.node_id
+            for from_id, to_id, _ in p._edges
+        )
+
+    def test_condition_branch_rollback_removes_lazy_nodes(self):
+        with Pipeline("foreign"):
+            foreign = notify("Foreign", webhook_url="https://example.test/foreign")
+
+        with Pipeline("conditional") as p:
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "always_true", src)
+
+            @task("Lazy")
+            def lazy(rows):
+                return rows
+
+            with pytest.raises(PipelineError, match="cross pipeline boundaries"):
+                gate.when([lazy, foreign])
+
+        assert all(node["name"] != "Lazy" for node in p._nodes.values())
+        assert lazy._auto_ref is None
+
+        with Pipeline("foreign lazy") as foreign_pipeline:
+            @task("Foreign Lazy")
+            def foreign_lazy(rows):
+                return rows
+
+        with Pipeline("conditional") as local_pipeline:
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "always_true", src)
+            with pytest.raises(PipelineError, match="cross pipeline boundaries"):
+                gate.when(foreign_lazy)
+
+        assert foreign_pipeline._nodes == {}
+        assert foreign_lazy._auto_ref is None
+        assert len(local_pipeline._nodes) == 2
 
     def test_full_pipeline_with_dbt_and_notify(self):
         """End-to-end: extract → dbt → quality → notify."""

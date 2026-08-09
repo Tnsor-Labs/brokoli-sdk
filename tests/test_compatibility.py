@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from brokoli import Pipeline, condition_node, notify, source_db
 from brokoli import cli
 from brokoli.compatibility import (
     LegacyServerWarning,
@@ -144,6 +145,38 @@ def test_reported_ir_mismatch_cannot_be_bypassed(monkeypatch):
         )
 
     assert "cannot override" in str(exc_info.value)
+
+
+def test_conditional_pipeline_preflight_requires_ir_21(monkeypatch):
+    with Pipeline("conditional") as pipeline:
+        source = source_db("Source", query="SELECT 1")
+        gate = condition_node("Gate", "always_true", source)
+        gate.when(notify("Selected", webhook_url="https://example.test"))
+
+    assert pipeline.to_json()["ir_version"] == "2.1"
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        Mock(return_value=FakeResponse({"supported_ir_versions": ["2.0"]})),
+    )
+    with pytest.raises(CompatibilityError, match="requires IR 2.1"):
+        preflight_server_compatibility([pipeline], "http://server")
+
+
+def test_conditional_pipeline_preflight_accepts_ir_21(monkeypatch):
+    with Pipeline("conditional") as pipeline:
+        source = source_db("Source", query="SELECT 1")
+        gate = condition_node("Gate", "always_false", source)
+        gate.otherwise(notify("Selected", webhook_url="https://example.test"))
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        Mock(
+            return_value=FakeResponse(
+                {"supported_ir_versions": ["2.0", "2.1"]}
+            )
+        ),
+    )
+    preflight_server_compatibility([pipeline], "http://server")
 
 
 def test_deploy_loads_and_preflights_all_pipelines_before_persistence(monkeypatch):
