@@ -12,7 +12,8 @@ import urllib.error
 from pathlib import Path
 from typing import Any
 
-from brokoli.exceptions import DeployError, ValidationError
+from brokoli.compatibility import preflight_server_compatibility
+from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
 
 REQUEST_TIMEOUT = 10
 
@@ -134,25 +135,34 @@ def deploy(args: argparse.Namespace) -> None:
 
     server = args.server.rstrip("/")
     auth_header = _auth_header_from_args(args)
-    skip_validation: bool = args.skip_validation
+    skip_validation: bool = getattr(args, "skip_validation", False)
+    allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
+    pipelines: list[Any] = []
 
     for f in _collect_files(args.file):
         print(f"Loading {f}...")
-        pipelines = load_pipeline_from_file(str(f))
+        pipelines.extend(load_pipeline_from_file(str(f)))
 
-        for pipeline in pipelines:
-            if not skip_validation:
-                print(f"  Validating {pipeline.name}...")
-                vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
-                vr.print_report()
-                if not vr.valid:
-                    raise ValidationError(
-                        [str(e) for e in vr.errors],
-                    )
+    preflight_server_compatibility(
+        pipelines,
+        server,
+        auth_header,
+        allow_legacy_server=allow_legacy_server,
+    )
 
-            payload = pipeline.to_json()
-            match = _find_existing_pipeline(server, auth_header, pipeline.name)
-            _upsert_pipeline(server, auth_header, pipeline, payload, match)
+    for pipeline in pipelines:
+        if not skip_validation:
+            print(f"  Validating {pipeline.name}...")
+            vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
+            vr.print_report()
+            if not vr.valid:
+                raise ValidationError(
+                    [str(e) for e in vr.errors],
+                )
+
+        payload = pipeline.to_json()
+        match = _find_existing_pipeline(server, auth_header, pipeline.name)
+        _upsert_pipeline(server, auth_header, pipeline, payload, match)
 
 
 def validate_cmd(args: argparse.Namespace) -> None:
@@ -161,16 +171,26 @@ def validate_cmd(args: argparse.Namespace) -> None:
 
     server = args.server.rstrip("/")
     auth_header = _auth_header_from_args(args)
+    allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
+    pipelines: list[Any] = []
+
+    for f in _collect_files(args.file):
+        pipelines.extend(load_pipeline_from_file(str(f)))
+
+    preflight_server_compatibility(
+        pipelines,
+        server,
+        auth_header,
+        allow_legacy_server=allow_legacy_server,
+    )
 
     total_errors = 0
-    for f in _collect_files(args.file):
-        pipelines = load_pipeline_from_file(str(f))
-        for pipeline in pipelines:
-            print(f"Validating: {pipeline.name}")
-            vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
-            vr.print_report()
-            total_errors += len(vr.errors)
-            print()
+    for pipeline in pipelines:
+        print(f"Validating: {pipeline.name}")
+        vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
+        vr.print_report()
+        total_errors += len(vr.errors)
+        print()
 
     if total_errors > 0:
         raise ValidationError([f"{total_errors} validation error(s) found"])
@@ -219,6 +239,11 @@ def main() -> None:
     dp.add_argument("--server", default="http://localhost:8080", help="Brokoli server URL")
     dp.add_argument("--api-key", default="", help="API key for authentication")
     dp.add_argument("--skip-validation", action="store_true", help="Skip pre-deploy validation")
+    dp.add_argument(
+        "--allow-legacy-server",
+        action="store_true",
+        help="Allow a trusted server that predates capability negotiation",
+    )
     dp.set_defaults(func=deploy)
 
     # validate (without deploying)
@@ -226,6 +251,11 @@ def main() -> None:
     vp.add_argument("file", help="Python file or directory")
     vp.add_argument("--server", default="http://localhost:8080", help="Brokoli server URL (for conn_id checks)")
     vp.add_argument("--api-key", default="", help="API key")
+    vp.add_argument(
+        "--allow-legacy-server",
+        action="store_true",
+        help="Allow a trusted server that predates capability negotiation",
+    )
     vp.set_defaults(func=validate_cmd)
 
     # compile
@@ -250,6 +280,9 @@ def main() -> None:
         args.func(args)
     except ValidationError as exc:
         print(f"\nValidation failed: {exc}")
+        sys.exit(1)
+    except CompatibilityError as exc:
+        print(f"\nCompatibility error: {exc}")
         sys.exit(1)
     except DeployError as exc:
         print(f"\nDeploy error: {exc}")

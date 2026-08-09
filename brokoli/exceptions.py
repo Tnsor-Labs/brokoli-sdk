@@ -27,6 +27,10 @@ class ValidationError(BrokoliError):
         super().__init__(summary)
 
 
+class CompatibilityError(BrokoliError):
+    """Raised when the target server cannot execute the SDK's pipeline IR."""
+
+
 class DeployError(BrokoliError):
     """Raised when pipeline deployment fails."""
 
