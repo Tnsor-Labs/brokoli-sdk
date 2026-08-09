@@ -2,7 +2,7 @@
 
 from brokoli.pipeline import (
     Pipeline,
-    NodeRef, ScalarRef, ArtifactRef, DatasetRef, CollectionRef,
+    NodeRef, ConditionRef, ScalarRef, ArtifactRef, DatasetRef, CollectionRef,
 )
 from brokoli.decorators import (
     task, condition,
@@ -29,7 +29,7 @@ __all__ = [
     # Core
     "Pipeline", "TaskResult", "ParseError",
     # Typed node references (brokoli-sdk#2) -- see brokoli.pipeline
-    "NodeRef", "ScalarRef", "ArtifactRef", "DatasetRef", "CollectionRef",
+    "NodeRef", "ConditionRef", "ScalarRef", "ArtifactRef", "DatasetRef", "CollectionRef",
     # Decorators
     "task", "condition", "source", "sink", "filter", "map", "validate", "sensor",
     # Built-in sources

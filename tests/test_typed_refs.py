@@ -17,7 +17,7 @@ from brokoli import (
     source_api, source_db, source_file, transform, join, migrate, dbt,
     sink_db, quality_check, code, notify, condition_node,
     union,
-    NodeRef, ScalarRef, ArtifactRef, DatasetRef, CollectionRef,
+    NodeRef, ConditionRef, ScalarRef, ArtifactRef, DatasetRef, CollectionRef,
 )
 from brokoli.pipeline import _build_union_node
 from brokoli.validation import validate_pipeline
@@ -97,7 +97,7 @@ class TestTypedRefsReturned:
             assert type(quality_check("Q", input=src, rules=["not_null(id)"])) is NodeRef
             assert type(code("C", script="x = 1")) is NodeRef
             assert type(notify("N", webhook_url="https://hook")) is NodeRef
-            assert type(condition_node("Gate", expression="row_count > 0", input=src)) is NodeRef
+            assert type(condition_node("Gate", expression="row_count > 0", input=src)) is ConditionRef
 
 
 # ---------------------------------------------------------------------------

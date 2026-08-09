@@ -1,6 +1,9 @@
 """Tests for code generation and TaskResult."""
 
-from brokoli import Pipeline, task, condition, source_db, sink_db
+import pytest
+
+from brokoli import Pipeline, task, condition, source_db
+from brokoli.exceptions import PipelineError
 from brokoli.result import TaskResult
 
 
@@ -21,7 +24,7 @@ class TestCodeGeneration:
         assert "def process" in script
         assert "_task_result = process(rows)" in script
 
-    def test_condition_generates_wrapper(self):
+    def test_condition_rejects_unsupported_wrapper(self):
         with Pipeline("test") as p:
             src = source_db("S", query="SELECT 1", conn_id="pg")
 
@@ -29,13 +32,10 @@ class TestCodeGeneration:
             def is_ok(df) -> bool:
                 return len(df) > 0
 
-            with is_ok(src) as (good, bad):
-                good >> sink_db("OK", table="t", conn_id="pg")
+            with pytest.raises(PipelineError, match="runtime input contract"):
+                is_ok(src)
 
-        nodes = p.to_json()["nodes"]
-        code_nodes = [n for n in nodes if n["type"] == "code"]
-        assert len(code_nodes) >= 1
-        assert "def is_ok" in code_nodes[0]["config"]["script"]
+        assert len(p._nodes) == 1
 
     def test_task_handles_none_return(self):
         """Template should handle None return from task."""

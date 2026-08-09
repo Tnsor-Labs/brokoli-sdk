@@ -3,7 +3,7 @@
 Available decorators::
 
     @task       -- general-purpose data processing
-    @condition  -- boolean branching (true/false split)
+    @condition  -- reserved predicate API; invocation currently fails closed
     @source     -- custom data fetcher (no input, returns rows)
     @sink       -- custom data writer (takes rows, pass-through)
     @filter     -- row-level predicate (keep rows where func returns True)
@@ -128,19 +128,11 @@ def condition(
     *,
     name: str = "",
 ) -> _ConditionWrapper | Callable:
-    """Wrap a function returning ``bool`` as a condition node for DAG branching.
+    """Declare a Python condition predicate.
 
-    Use with a ``with`` statement to get true/false branch handles.
-
-    Example::
-
-        @condition
-        def has_enough_data(rows):
-            return len(rows) >= 10
-
-        with has_enough_data(source_node) as (ok, fail):
-            ok >> process >> sink
-            fail >> alert
+    Invoking the wrapper currently raises :class:`PipelineError` because the
+    runtime IR cannot distinguish predicate input from the unchanged branch
+    payload. Use ``condition_node(...).when()/.otherwise()`` instead.
     """
     def decorator(func: Callable) -> _ConditionWrapper:
         cond_name = _resolve_name(name_or_func, name, func)

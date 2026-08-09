@@ -4,13 +4,13 @@ Example 4: dbt Orchestration with Conditional Alerts
 Extract raw events, run dbt models, check if results are valid,
 and notify the team on success or alert on failure.
 
-Showcases: source_db, dbt, @condition, notify, branching.
+Showcases: source_db, dbt, condition_node, notify, branching.
 
 Run:
     brokoli deploy examples/04_dbt_with_alerts.py --server http://localhost:8080
 """
 
-from brokoli import Pipeline, condition, source_db, dbt, notify
+from brokoli import Pipeline, condition_node, source_db, dbt, notify
 
 
 with Pipeline(
@@ -34,10 +34,11 @@ with Pipeline(
         target="prod",
     )
 
-    @condition("Models succeeded?")
-    def models_ok(rows):
-        # dbt output has status column — check no failures
-        return all(r.get("status") != "error" for r in rows)
+    models_ok = condition_node(
+        "Models produced rows?",
+        expression="row_count > 0",
+        input=models,
+    )
 
     success_alert = notify(
         "Slack: Success",
@@ -56,6 +57,5 @@ with Pipeline(
     )
 
     raw >> models
-    with models_ok(models) as (ok, fail):
-        ok >> success_alert
-        fail >> failure_alert
+    models_ok.when(success_alert)
+    models_ok.otherwise(failure_alert)

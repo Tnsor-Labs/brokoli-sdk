@@ -26,6 +26,7 @@ LAYOUT_Y_MIN: int = 50
 # way consumers (the Go backend, the UI) need to know about -- e.g. the
 # addition of the ``capabilities`` field on nodes.
 IR_VERSION: str = "2.0"
+CONDITIONAL_ROUTING_IR_VERSION: str = "2.1"
 
 # --- Capability model ---
 #
@@ -547,6 +548,102 @@ class NodeRef:
         raise TypeError(f"Cannot connect to {type(item).__name__}")
 
 
+class ConditionRef(NodeRef):
+    """Reference to a condition node with explicit true/false routing."""
+
+    def when(self, other: Any) -> "NodeRef | _MultiRef":
+        """Connect *other* to the true branch."""
+        return self._route(other, True)
+
+    def otherwise(self, other: Any) -> "NodeRef | _MultiRef":
+        """Connect *other* to the false branch."""
+        return self._route(other, False)
+
+    def _route(self, other: Any, selected: bool) -> "NodeRef | _MultiRef":
+        incoming = sum(1 for _, to_id, _ in self.pipeline._edges if to_id == self.node_id)
+        if incoming != 1:
+            raise PipelineError(
+                f"Condition node {self.node_id!r} must have exactly one input "
+                f"before adding branches; got {incoming}."
+            )
+        expression = self.pipeline._nodes[self.node_id]["config"].get("expression", "")
+        if not isinstance(expression, str) or not expression.strip():
+            raise PipelineError(
+                f"Condition node {self.node_id!r} requires a non-empty expression."
+            )
+
+        ancestors = [
+            from_id
+            for from_id, to_id, _ in self.pipeline._edges
+            if to_id == self.node_id
+        ]
+        visited: set[str] = set()
+        while ancestors:
+            node_id = ancestors.pop()
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            if self.pipeline._nodes.get(node_id, {}).get("type") == "condition":
+                raise PipelineError(
+                    "Nested conditional routing is not supported; condition "
+                    f"node {self.node_id!r} is downstream of {node_id!r}."
+                )
+            ancestors.extend(
+                from_id
+                for from_id, to_id, _ in self.pipeline._edges
+                if to_id == node_id
+            )
+
+        items = other if isinstance(other, list) else [other]
+        if not items:
+            raise PipelineError("Condition branches require at least one destination.")
+        for item in items:
+            owner = getattr(item, "pipeline", getattr(item, "_pipeline", self.pipeline))
+            if owner is not self.pipeline:
+                raise PipelineError("Condition branches cannot cross pipeline boundaries.")
+        nodes_before = dict(self.pipeline._nodes)
+        edges_before = list(self.pipeline._edges)
+        order_before = list(self.pipeline._node_order)
+        branches_before = dict(self.pipeline._branches)
+        cached_refs = [
+            (item, item._auto_ref)
+            for item in items
+            if hasattr(item, "_auto_ref")
+        ]
+
+        try:
+            refs = [self._resolve(item) for item in items]
+            for ref in refs:
+                if ref.pipeline is not self.pipeline:
+                    raise PipelineError("Condition branches cannot cross pipeline boundaries.")
+                if self.pipeline._nodes.get(ref.node_id, {}).get("type") == "condition":
+                    raise PipelineError(
+                        "Nested conditional routing is not supported; route to a "
+                        "non-condition node instead."
+                    )
+                for existing_from, existing_to, existing_condition in self.pipeline._edges:
+                    if existing_from == self.node_id and existing_to == ref.node_id:
+                        if existing_condition != selected:
+                            raise PipelineError(
+                                f"Edge {self.node_id!r} -> {ref.node_id!r} cannot "
+                                "belong to multiple branches."
+                            )
+            for ref in refs:
+                self.pipeline._add_edge(self.node_id, ref.node_id, condition=selected)
+        except Exception:
+            self.pipeline._nodes = nodes_before
+            self.pipeline._edges = edges_before
+            self.pipeline._node_order = order_before
+            self.pipeline._branches = branches_before
+            for item, cached_ref in cached_refs:
+                item._auto_ref = cached_ref
+            raise
+
+        if isinstance(other, list):
+            return _MultiRef(refs, self.pipeline)
+        return refs[0]
+
+
 # ---------------------------------------------------------------------------
 # Typed node references (brokoli-sdk#2)
 # ---------------------------------------------------------------------------
@@ -953,48 +1050,11 @@ class _ConditionWrapper:
         self.__wrapped__ = func
 
     def __call__(self, input_ref: NodeRef) -> _ConditionContext:
-        func_source = _extract_func_source(self._func)
-
-        cond_script = CONDITION_WRAPPER_TEMPLATE.format(
-            func_source=func_source,
-            func_name=self._func.__name__,
+        raise PipelineError(
+            "@condition predicates are not supported by the runtime input "
+            "contract. Use condition_node(..., expression=...) with "
+            ".when() and .otherwise() instead."
         )
-
-        # --- Build a three-node sub-graph for the condition ---
-        #
-        # 1. eval node   -- runs the user's Python predicate, outputs rows
-        #                    (empty list = false, non-empty = true).
-        # 2. condition   -- a lightweight "row_count > 0" gate that splits
-        #                    the DAG into true / false branches.
-        # 3. branch refs -- virtual true/false handles so downstream ``>>``
-        #                    knows which side of the gate to attach to.
-        #
-        # Edges: input -> eval -> condition
-        #         input -------> condition  (condition also sees raw rows)
-
-        eval_id = _make_id(self._name + "_eval")
-        self._pipeline._add_node(eval_id, "code", self._name + " (eval)", {
-            "language": "python",
-            "script": cond_script,
-        })
-
-        cond_id = _make_id(self._name)
-        self._pipeline._add_node(cond_id, "condition", self._name, {
-            "expression": "row_count > 0",
-        })
-
-        # Wire edges from input -> eval -> condition, and input -> condition.
-        if isinstance(input_ref, NodeRef):
-            self._pipeline._add_edge(input_ref.node_id, eval_id)
-            self._pipeline._add_edge(input_ref.node_id, cond_id)
-        self._pipeline._add_edge(eval_id, cond_id)
-
-        # Register branch metadata so deploy can generate proper routing.
-        self._pipeline._branches[cond_id] = {"true": [], "false": []}
-        true_ref = _BranchRef(cond_id, "true", self._pipeline)
-        false_ref = _BranchRef(cond_id, "false", self._pipeline)
-
-        return _ConditionContext(true_ref, false_ref, self._pipeline)
 
 
 class _BranchRef(NodeRef):
@@ -1306,7 +1366,7 @@ class Pipeline:
 
         # DAG state
         self._nodes: dict[str, dict[str, Any]] = {}
-        self._edges: list[tuple[str, str]] = []
+        self._edges: list[tuple[str, str, bool | None]] = []
         self._branches: dict[str, dict[str, list[str]]] = {}
         self._node_order: list[str] = []
 
@@ -1357,15 +1417,24 @@ class Pipeline:
         }
         self._node_order.append(node_id)
 
-    def _add_edge(self, from_id: str, to_id: str) -> None:
-        edge = (from_id, to_id)
-        if edge not in self._edges:
-            self._edges.append(edge)
+    def _add_edge(self, from_id: str, to_id: str, condition: bool | None = None) -> None:
+        if condition is not None and type(condition) is not bool:
+            raise PipelineError("Edge condition must be true, false, or omitted.")
+        for existing_from, existing_to, existing_condition in self._edges:
+            if existing_from != from_id or existing_to != to_id:
+                continue
+            if existing_condition == condition:
+                return
+            raise PipelineError(
+                f"Edge {from_id!r} -> {to_id!r} cannot belong to multiple branches."
+            )
+        self._edges.append((from_id, to_id, condition))
 
     # -- Serialization -----------------------------------------------------
 
     def to_json(self) -> dict[str, Any]:
         """Convert pipeline to Brokoli API JSON format with auto-layout."""
+        self._validate_conditional_routing()
         positions = self._auto_layout()
 
         nodes: list[dict[str, Any]] = []
@@ -1388,9 +1457,20 @@ class Pipeline:
             "description": self.description,
             "schedule": self.schedule,
             "enabled": True,
-            "ir_version": IR_VERSION,
+            "ir_version": (
+                CONDITIONAL_ROUTING_IR_VERSION
+                if any(condition is not None for _, _, condition in self._edges)
+                else IR_VERSION
+            ),
             "nodes": nodes,
-            "edges": [{"from": f, "to": t} for f, t in self._edges],
+            "edges": [
+                {
+                    "from": from_id,
+                    "to": to_id,
+                    **({} if condition is None else {"condition": condition}),
+                }
+                for from_id, to_id, condition in self._edges
+            ],
             "tags": self.tags,
             "depends_on": self.depends_on,
         }
@@ -1453,6 +1533,73 @@ class Pipeline:
 
     # -- Private helpers ---------------------------------------------------
 
+    def _validate_conditional_routing(self) -> None:
+        conditional_sources = {
+            from_id
+            for from_id, _, condition in self._edges
+            if condition is not None
+        }
+        if not conditional_sources:
+            return
+
+        adjacency: dict[str, list[str]] = {node_id: [] for node_id in self._nodes}
+        reverse_adjacency: dict[str, list[str]] = {node_id: [] for node_id in self._nodes}
+        for from_id, to_id, _ in self._edges:
+            adjacency.setdefault(from_id, []).append(to_id)
+            reverse_adjacency.setdefault(to_id, []).append(from_id)
+
+        for source_id in conditional_sources:
+            node = self._nodes.get(source_id)
+            if node is None or node.get("type") != "condition":
+                raise PipelineError(
+                    f"Conditional edge source {source_id!r} must be a condition node."
+                )
+            incoming = sum(1 for _, to_id, _ in self._edges if to_id == source_id)
+            if incoming != 1:
+                raise PipelineError(
+                    f"Condition node {source_id!r} must have exactly one input; got {incoming}."
+                )
+            expression = node.get("config", {}).get("expression", "")
+            if not isinstance(expression, str) or not expression.strip():
+                raise PipelineError(
+                    f"Condition node {source_id!r} requires a non-empty expression."
+                )
+
+            ancestors = list(reverse_adjacency.get(source_id, ()))
+            visited_ancestors: set[str] = set()
+            while ancestors:
+                node_id = ancestors.pop()
+                if node_id in visited_ancestors:
+                    continue
+                visited_ancestors.add(node_id)
+                if self._nodes.get(node_id, {}).get("type") == "condition":
+                    raise PipelineError(
+                        "Nested conditional routing is not supported; condition "
+                        f"node {source_id!r} is downstream of {node_id!r}."
+                    )
+                ancestors.extend(reverse_adjacency.get(node_id, ()))
+
+            for from_id, to_id, condition in self._edges:
+                if from_id == source_id and condition is None:
+                    raise PipelineError(
+                        f"Condition node edge {source_id!r} -> {to_id!r} "
+                        "must use .when() or .otherwise()."
+                    )
+
+            stack = list(adjacency.get(source_id, ()))
+            visited: set[str] = set()
+            while stack:
+                node_id = stack.pop()
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                if self._nodes.get(node_id, {}).get("type") == "condition":
+                    raise PipelineError(
+                        "Nested conditional routing is not supported; condition "
+                        f"node {node_id!r} is downstream of {source_id!r}."
+                    )
+                stack.extend(adjacency.get(node_id, ()))
+
     @staticmethod
     def _annotate_schema_hint(
         node: dict[str, Any],
@@ -1482,7 +1629,7 @@ class Pipeline:
         # Build adjacency and in-degree maps.
         in_degree: dict[str, int] = {nid: 0 for nid in self._nodes}
         adj: dict[str, list[str]] = {nid: [] for nid in self._nodes}
-        for from_id, to_id in self._edges:
+        for from_id, to_id, _ in self._edges:
             if from_id not in adj or to_id not in in_degree:
                 continue
             adj[from_id].append(to_id)

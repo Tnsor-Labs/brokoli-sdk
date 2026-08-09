@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Optional, Any
 
-from brokoli.exceptions import ContextError
+from brokoli.exceptions import ContextError, PipelineError
 from brokoli.pagination import PaginationStrategy
 from brokoli.parsing import ParseError, parse_quality_rule
 from brokoli.pipeline import (
-    Pipeline, NodeRef, _make_id, _MultiRef,
+    Pipeline, NodeRef, ConditionRef, _make_id, _MultiRef,
     ArtifactRef, DatasetRef, ScalarRef,
     _build_union_node,
 )
@@ -86,6 +86,9 @@ def _register_node(
         ContextError: If no pipeline context is active.
     """
     pipeline = _current_pipeline()
+    for inp in inputs:
+        if isinstance(inp, NodeRef) and inp.pipeline is not pipeline:
+            raise PipelineError("Nodes from different pipelines cannot be connected.")
     node_id = _make_id(name)
     pipeline._add_node(node_id, node_type, name, config)
 
@@ -696,10 +699,8 @@ def condition_node(
     name: str,
     expression: str = "",
     input: Optional[NodeRef] = None,
-) -> NodeRef:
+) -> ConditionRef:
     """If/else branch based on a data condition.
-
-    For more complex conditions, use the ``@condition`` decorator instead.
 
     Example::
 
@@ -707,9 +708,13 @@ def condition_node(
             data = source_db("Extract", query="SELECT * FROM events")
             gate = condition_node("Has data?", expression="row_count > 0",
                                   input=data)
+            gate.when(sink_db("Load", table="events"))
+            gate.otherwise(notify("No data", webhook_url="https://example.test"))
     """
     config = _build_config({"expression": expression}, {})
-    return _register_node("condition", name, config, *_input_args(input))
+    return _register_node(
+        "condition", name, config, *_input_args(input), ref_cls=ConditionRef
+    )
 
 
 def parallel(*nodes: NodeRef) -> _MultiRef | NodeRef:
