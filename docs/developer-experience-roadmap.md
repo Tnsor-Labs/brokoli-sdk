@@ -30,7 +30,7 @@ The backend decides how many page, partition, or mapped instances execute; where
 | Static DAGs and built-in nodes | Available | Preserve and cover with backend contract fixtures |
 | Decorated Python tasks | Available with packaging limits | Add runtime/image contracts only after backend ADRs |
 | HTTP pagination | Available | Keep config and backend behavior tested together |
-| Artifact response and automatic spill | Available with local-store limits | Document authoring refs versus runtime refs clearly |
+| Artifact response and automatic spill | Available with local-store limits | Document the runtime reference row (`uri`, `media_type`, `size_bytes`, `checksum`) that replaced the inlined body, and authoring refs versus runtime refs |
 | Capability negotiation | Server available, SDK missing preflight | Implement [#9](https://github.com/Tnsor-Labs/brokoli-sdk/issues/9) |
 | `.expand()` | Partial: sequential in one node | Mark limits clearly; require physical-instance capability for distributed semantics |
 | Collection union | Partial: in-memory dataset union | Keep available; distinguish it from future manifest union |
@@ -44,7 +44,9 @@ The backend decides how many page, partition, or mapped instances execute; where
 
 ### Deterministic compilation
 
-Node IDs currently include randomness. The compiler should produce stable logical identity from an explicit node key or deterministic source metadata, then generate a normalized semantic representation that excludes layout-only changes.
+Node IDs currently include randomness. The compiler should produce stable logical identity with an ordered rule: an explicit user-supplied key wins; otherwise the function or node name qualified by a deterministic per-scope counter. Source position is never an identity input — a blank line would shift every line number, recreating the noisy-diff problem this fixes while *also* severing node identity, and identity now carries extra weight because the backend derives physical instance keys from logical node IDs (core ADR-015). Identity churn there does not make diffs noisy; it orphans every instance history.
+
+The normalized semantic representation excludes layout-only changes.
 
 Required commands:
 
@@ -76,7 +78,7 @@ Provide three layers without implementing another scheduler:
 2. Compile and snapshot normalized graph/IR contracts.
 3. Execute supported nodes through a local Brokoli backend harness with mock connections and connectors.
 
-The third layer must exercise Go behavior so local success predicts deployed success.
+The third layer must exercise Go behavior so local success predicts deployed success. The control plane is one Go binary, so the harness should *be* that binary — embedded, downloaded, or spawned — never a Python approximation of it. This is the one seam Airflow, Dagster, and Prefect all leak at, and the only one of the four architectures that can close it completely is this one.
 
 ### Operational CLI
 
@@ -114,7 +116,7 @@ These commands call backend APIs. They do not execute distributed tasks in the S
 ### 2. Compatibility and deterministic IR
 
 - Implement server capability preflight.
-- Add stable node identity and normalized semantic diff.
+- Add stable node identity and normalized semantic diff. This step is a hard prerequisite of the core repository's physical-plan milestone, not a parallel track: instance keys derive from logical node IDs (core ADR-015), so key derivation must not freeze while IDs still churn.
 - Serialize every accepted `Pipeline` option or reject it locally.
 - Add cross-repository IR fixtures from the core-owned schema.
 
