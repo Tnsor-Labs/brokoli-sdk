@@ -73,22 +73,6 @@ def load_pipeline_from_file(filepath: str) -> list[Any]:
     return pipelines
 
 
-def _find_existing_pipeline(
-    server: str, auth_header: str, name: str,
-) -> dict[str, Any] | None:
-    """Look up an existing pipeline by name on the server. Returns None on miss."""
-    try:
-        req = urllib.request.Request(
-            f"{server}/api/pipelines",
-            headers=_make_headers(auth_header),
-        )
-        resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
-        existing = json.loads(resp.read())
-        return next((p for p in existing if p.get("name") == name), None)
-    except Exception:
-        return None
-
-
 def _upsert_pipeline(
     server: str,
     auth_header: str,
@@ -153,7 +137,17 @@ def deploy(args: argparse.Namespace) -> None:
         allow_legacy_server=allow_legacy_server,
     )
 
+    payloads: list[tuple[Any, dict[str, Any]]] = []
+    local_ids: set[str] = set()
     for pipeline in pipelines:
+        pipeline_id = getattr(pipeline, "pipeline_id", "")
+        if pipeline_id and pipeline_id in local_ids:
+            raise DeployError(
+                pipeline.name, 0, f"Duplicate local pipeline_id {pipeline_id!r}"
+            )
+        if pipeline_id:
+            local_ids.add(pipeline_id)
+
         if not skip_validation:
             print(f"  Validating {pipeline.name}...")
             vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
@@ -163,8 +157,12 @@ def deploy(args: argparse.Namespace) -> None:
                     [str(e) for e in vr.errors],
                 )
 
-        payload = pipeline.to_json()
-        match = _find_existing_pipeline(server, auth_header, pipeline.name)
+        payloads.append((pipeline, pipeline.to_json()))
+
+    remote_pipelines = _list_remote_pipelines(server, auth_header, operation="deploy")
+    matches = _match_remote_pipelines(pipelines, remote_pipelines)
+
+    for (pipeline, payload), match in zip(payloads, matches):
         _upsert_pipeline(server, auth_header, pipeline, payload, match)
 
 
@@ -248,7 +246,7 @@ def compile_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
-def _get_json(url: str, auth_header: str) -> Any:
+def _get_json(url: str, auth_header: str, operation: str = "diff") -> Any:
     """GET and decode a server JSON response as an operational CLI request."""
     request = urllib.request.Request(url, headers=_make_headers(auth_header))
     try:
@@ -256,15 +254,19 @@ def _get_json(url: str, auth_header: str) -> Any:
         return json.loads(response.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
-        raise DeployError("diff", exc.code, body) from exc
+        raise DeployError(operation, exc.code, body) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", str(exc))
-        raise DeployError("diff", 0, f"Could not reach server: {reason}") from exc
+        raise DeployError(operation, 0, f"Could not reach server: {reason}") from exc
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
-        raise DeployError("diff", 0, f"Malformed JSON response from {url}: {exc}") from exc
+        raise DeployError(operation, 0, f"Malformed JSON response from {url}: {exc}") from exc
 
 
-def _list_remote_pipelines(server: str, auth_header: str) -> list[dict[str, Any]]:
+def _list_remote_pipelines(
+    server: str,
+    auth_header: str,
+    operation: str = "diff",
+) -> list[dict[str, Any]]:
     """List all remote pipelines across legacy and cursor response shapes."""
     pipelines: list[dict[str, Any]] = []
     after: str | None = None
@@ -277,6 +279,7 @@ def _list_remote_pipelines(server: str, auth_header: str) -> list[dict[str, Any]
         payload = _get_json(
             f"{server}/api/pipelines?{urllib.parse.urlencode(query)}",
             auth_header,
+            operation,
         )
 
         if isinstance(payload, list):
@@ -289,21 +292,21 @@ def _list_remote_pipelines(server: str, auth_header: str) -> list[dict[str, Any]
             cursor = payload.get("cursor")
             if not isinstance(items, list) or not isinstance(has_next, bool):
                 raise DeployError(
-                    "diff", 0, "Malformed pipeline list response: expected items and has_next",
+                    operation, 0, "Malformed pipeline list response: expected items and has_next",
                 )
         else:
             raise DeployError(
-                "diff", 0, "Malformed pipeline list response: expected a list or object",
+                operation, 0, "Malformed pipeline list response: expected a list or object",
             )
 
         if not all(isinstance(item, dict) for item in items):
-            raise DeployError("diff", 0, "Malformed pipeline list response: invalid item")
+            raise DeployError(operation, 0, "Malformed pipeline list response: invalid item")
         pipelines.extend(items)
 
         if not has_next:
             return pipelines
         if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
-            raise DeployError("diff", 0, "Malformed pipeline list response: invalid cursor")
+            raise DeployError(operation, 0, "Malformed pipeline list response: invalid cursor")
         seen_cursors.add(cursor)
         after = cursor
 
@@ -312,10 +315,28 @@ def _match_remote_pipeline(
     pipeline: Any, remote: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Match by exact logical ID, falling back to exact name."""
+    pipeline_id = getattr(pipeline, "pipeline_id", "")
     id_matches = [
-        item for item in remote if item.get("pipeline_id") == pipeline.pipeline_id
+        item for item in remote
+        if pipeline_id and item.get("pipeline_id") == pipeline_id
     ]
-    matches = id_matches or [item for item in remote if item.get("name") == pipeline.name]
+    name_matches = [item for item in remote if item.get("name") == pipeline.name]
+    conflicting_name_matches = [
+        item for item in name_matches if item.get("pipeline_id") not in (None, "")
+    ]
+    if not id_matches and conflicting_name_matches:
+        conflicting_ids = sorted(
+            str(item["pipeline_id"]) for item in conflicting_name_matches
+        )
+        raise DeployError(
+            pipeline.name,
+            0,
+            "Remote name matches a different pipeline_id: "
+            + ", ".join(conflicting_ids),
+        )
+    matches = id_matches or [
+        item for item in name_matches if item.get("pipeline_id") in (None, "")
+    ]
     if len(matches) > 1:
         raise DeployError(
             pipeline.name,
@@ -323,6 +344,41 @@ def _match_remote_pipeline(
             "Ambiguous remote match; pipeline_id or name matched multiple pipelines",
         )
     return matches[0] if matches else None
+
+
+def _match_remote_pipelines(
+    pipelines: list[Any],
+    remote: list[dict[str, Any]],
+) -> list[dict[str, Any] | None]:
+    """Match a local batch while rejecting duplicate IDs and remote targets."""
+    local_ids: set[str] = set()
+    remote_targets: set[str] = set()
+    matches: list[dict[str, Any] | None] = []
+    for pipeline in pipelines:
+        pipeline_id = getattr(pipeline, "pipeline_id", "")
+        if pipeline_id and pipeline_id in local_ids:
+            raise DeployError(
+                pipeline.name, 0, f"Duplicate local pipeline_id {pipeline_id!r}"
+            )
+        if pipeline_id:
+            local_ids.add(pipeline_id)
+
+        match = _match_remote_pipeline(pipeline, remote)
+        if match is not None:
+            remote_id = match.get("id")
+            if not isinstance(remote_id, str) or not remote_id:
+                raise DeployError(
+                    pipeline.name, 0, "Matched pipeline has no valid server id"
+                )
+            if remote_id in remote_targets:
+                raise DeployError(
+                    pipeline.name,
+                    0,
+                    f"Multiple local pipelines target remote pipeline {remote_id!r}",
+                )
+            remote_targets.add(remote_id)
+        matches.append(match)
+    return matches
 
 
 def _validate_pipeline_detail(detail: Any, pipeline_name: str) -> dict[str, Any]:
@@ -437,10 +493,10 @@ def diff_cmd(args: argparse.Namespace) -> int:
         pipelines.extend(load_pipeline_from_file(str(f)))
 
     remote = _list_remote_pipelines(server, auth_header)
+    matches = _match_remote_pipelines(pipelines, remote)
     different = False
-    for pipeline in pipelines:
+    for pipeline, match in zip(pipelines, matches):
         local_ir = pipeline.to_json()
-        match = _match_remote_pipeline(pipeline, remote)
         remote_ir = None
         if match is not None:
             remote_id = match.get("id")
