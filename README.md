@@ -427,30 +427,15 @@ sink_file("Save", path="/data/output_{{ ds }}.csv")
 
 ## Examples
 
-See [`examples/demo/`](examples/demo/) for 7 runnable pipelines using free public APIs:
-
-| Example | Data Source | Complexity |
-|---------|-----------|------------|
-| [Country Analytics](examples/demo/01_country_analytics.py) | REST Countries API | Beginner |
-| [Crypto Market Tracker](examples/demo/02_crypto_market_tracker.py) | CoinGecko API | Beginner |
-| [Earthquake Monitor](examples/demo/03_earthquake_monitor.py) | USGS GeoJSON | Intermediate |
-| [GitHub Trending](examples/demo/04_github_trending.py) | GitHub API | Intermediate |
-| [World Bank Dashboard](examples/demo/05_economic_indicators.py) | World Bank API | Intermediate |
-| [FDA Adverse Events](examples/demo/06_drug_adverse_events.py) | OpenFDA API | Advanced |
-| [Weather Anomaly Detection](examples/demo/07_weather_anomaly_ml.py) | Open-Meteo API | Advanced |
-
-See [`examples/`](examples/) for architecture reference pipelines:
+See [`examples/`](examples/) for runnable and architecture-reference pipelines:
 
 | Example | Use Case |
 |---------|----------|
-| [Revenue ETL](examples/revenue_pipeline.py) | Multi-source ETL with quality gates |
-| [Fintech Reconciliation](examples/06_fintech_reconciliation.py) | 3-way payment reconciliation |
-| [ML Model Training](examples/07_ml_training_deploy.py) | Train → evaluate → conditional deploy |
-| [Data Drift Monitor](examples/08_data_drift_monitor.py) | Feature drift detection + auto-retrain |
-| [Reverse ETL](examples/09_reverse_etl.py) | Warehouse → Salesforce/Intercom/Mailchimp |
-| [dbt Orchestration](examples/10_dbt_orchestration.py) | Run dbt + validate + report |
-| [GDPR Deletion](examples/11_gdpr_data_deletion.py) | Multi-system data deletion compliance |
-| [Recommendation Engine](examples/12_recommendation_engine.py) | Collaborative filtering + deploy |
+| [Hello World](examples/01_hello_world.py) | Public API enrichment and CSV export |
+| [API to Database](examples/02_api_to_database.py) | REST ingestion, validation, and warehouse load |
+| [Join and Quality](examples/03_join_and_quality.py) | Multi-source join, quality gate, and fan-out |
+| [dbt with Alerts](examples/04_dbt_with_alerts.py) | dbt orchestration with conditional notifications |
+| [Custom Sensor Pipeline](examples/05_sensor_custom_pipeline.py) | Decorator-only ingestion with a file sensor |
 
 ## How It Works
 

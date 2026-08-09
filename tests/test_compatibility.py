@@ -208,7 +208,7 @@ def test_deploy_loads_and_preflights_all_pipelines_before_persistence(monkeypatc
             ("preflight", [pipeline.name for pipeline in pipelines])
         ),
     )
-    monkeypatch.setattr(cli, "_find_existing_pipeline", lambda *args: None)
+    monkeypatch.setattr(cli, "_list_remote_pipelines", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         cli,
         "_upsert_pipeline",
