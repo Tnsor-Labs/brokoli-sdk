@@ -2,6 +2,9 @@
 
 Define data pipelines in Python, run them visually.
 
+See the [developer-experience roadmap](docs/developer-experience-roadmap.md)
+for the current support boundaries and planned SDK/backend work.
+
 ```bash
 pip install brokoli
 ```
