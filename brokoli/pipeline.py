@@ -220,7 +220,28 @@ _NODE_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def _extract_func_source(func: Callable) -> str:
-    """Return the dedented source of *func*, stripping any decorator lines."""
+    """Return the dedented source of *func*, stripping any decorator lines.
+
+    Rejects shapes the extraction below cannot represent, instead of
+    emitting a script that silently omits them: the scan captures from the
+    first ``def `` line, so an ``async def`` never matches and a lambda has
+    no ``def`` line at all -- both used to produce a deployed script with
+    no function in it, which only failed remotely.
+    """
+    if inspect.iscoroutinefunction(func):
+        raise PipelineError(
+            f"{func.__qualname__!r} is an async function. Deployed task "
+            "scripts run under a plain synchronous entrypoint, so async "
+            "functions are not supported -- define it with `def` and do any "
+            "awaiting inside (e.g. `asyncio.run(...)`)."
+        )
+    if func.__name__ == "<lambda>":
+        raise PipelineError(
+            "Lambdas cannot be deployed: their source cannot be extracted "
+            "as a standalone function. Define a named function with `def` "
+            "instead."
+        )
+
     source = inspect.getsource(func)
     lines = source.split("\n")
 
@@ -270,9 +291,17 @@ _PACKAGE_MODES: tuple[str, ...] = ("auto", "module")
 
 
 def _is_json_serializable(value: Any) -> bool:
-    """Best-effort check that *value* round-trips through ``json.dumps``."""
+    """Best-effort check that *value* round-trips through ``json.dumps``.
+
+    ``allow_nan=False`` matters: by default ``json.dumps`` accepts
+    ``float('inf')``/``float('nan')``, but those values are later emitted
+    into the deployed script with ``repr()`` -- producing bare ``inf`` /
+    ``nan``, which are not valid Python literals and only fail remotely.
+    Rejecting them here routes the constant into the existing
+    names-the-symbol packaging error instead.
+    """
     try:
-        json.dumps(value)
+        json.dumps(value, allow_nan=False)
     except (TypeError, ValueError, RecursionError):
         return False
     return True

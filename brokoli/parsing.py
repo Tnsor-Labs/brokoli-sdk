@@ -5,13 +5,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
-class ParseError(Exception):
-    """Raised when a quality rule string cannot be parsed."""
-
-    def __init__(self, rule_string: str, reason: str) -> None:
-        self.rule_string = rule_string
-        super().__init__(f"Cannot parse rule '{rule_string}': {reason}")
+# The canonical ParseError lives in brokoli.exceptions (so it inherits
+# BrokoliError and `except brokoli.exceptions.ParseError` works); it is
+# re-exported here because this module is where it gets raised and where
+# historical imports point.
+from brokoli.exceptions import ParseError  # noqa: F401 -- re-exported
 
 
 # Pattern: function_name(args...)
