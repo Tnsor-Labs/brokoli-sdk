@@ -118,3 +118,17 @@ def make_work_with_local_helper():
         return [local_scale(r) for r in rows]
 
     return work
+
+
+import functools
+
+
+@functools.lru_cache(maxsize=None)
+def cached_lookup(key):
+    """A decorated helper -- its decorator must survive packaging."""
+    return {"a": 1, "b": 2}.get(key, 0)
+
+
+def work_with_cached_helper(rows):
+    """Task referencing a decorated helper."""
+    return [dict(r, v=cached_lookup(r.get("k", "a"))) for r in rows]

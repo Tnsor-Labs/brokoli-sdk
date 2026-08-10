@@ -219,7 +219,33 @@ def _make_id(name: str) -> str:
 _NODE_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
-def _extract_func_source(func: Callable, allow_freevars: bool = False) -> str:
+def _decorator_refs(func: Callable) -> list[str]:
+    """Root names referenced by *func*'s decorator lines (``@functools.
+    lru_cache(...)`` -> ``functools``), which live outside the function's
+    code object and so never appear in co_names.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(func))
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return []
+    if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return []
+    names: list[str] = []
+    for dec in tree.body[0].decorator_list:
+        node = dec
+        while isinstance(node, ast.Call):
+            node = node.func
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        if isinstance(node, ast.Name) and not hasattr(builtins, node.id):
+            names.append(node.id)
+    return names
+
+
+def _extract_func_source(
+    func: Callable, allow_freevars: bool = False, keep_decorators: bool = False
+) -> str:
     """Return the dedented source of *func*, stripping any decorator lines.
 
     Rejects shapes the extraction below cannot represent, instead of
@@ -255,6 +281,15 @@ def _extract_func_source(func: Callable, allow_freevars: bool = False) -> str:
         )
 
     source = inspect.getsource(func)
+
+    if keep_decorators:
+        # Auto-included helpers keep their decorator lines (getsource
+        # starts at the first decorator) -- stripping them silently
+        # changed helper behavior (@lru_cache stopped caching). The main
+        # task function must NOT take this path: its decorator is the SDK
+        # decorator itself, which doesn't exist remotely.
+        return textwrap.dedent(source)
+
     lines = source.split("\n")
 
     # Skip everything before the first `def` line (decorators, blank lines).
@@ -350,29 +385,40 @@ def _external_refs(func: Callable) -> list[str]:
     return out
 
 
-def _module_top_level_imports(module: Any) -> dict[str, str]:
+def _module_top_level_imports(module: Any) -> tuple[dict[str, str], set[str]]:
     """Map each name bound by a top-level ``import``/``from ... import`` in
     *module* to the exact source text of the statement that binds it, so
     only the imports a task actually needs can be selectively re-emitted.
+
+    Returns ``(bindings, relative)`` -- names in *relative* are bound by a
+    relative import (``from .helpers import x``), whose statement text
+    cannot run in a deployed standalone script (no parent package there).
+    They are tracked separately so packaging can fail naming them instead
+    of re-emitting a guaranteed remote ``ImportError``.
     """
     if module is None:
-        return {}
+        return {}, set()
     try:
         source = inspect.getsource(module)
         tree = ast.parse(source)
     except (OSError, TypeError, SyntaxError):
-        return {}
+        return {}, set()
     lines = source.splitlines()
     bindings: dict[str, str] = {}
+    relative: set[str] = set()
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             start = node.lineno
             end = getattr(node, "end_lineno", node.lineno)
             stmt = "\n".join(lines[start - 1:end])
+            is_relative = isinstance(node, ast.ImportFrom) and node.level > 0
             for alias in node.names:
                 bound = alias.asname or alias.name.split(".")[0]
-                bindings[bound] = stmt
-    return bindings
+                if is_relative:
+                    relative.add(bound)
+                else:
+                    bindings[bound] = stmt
+    return bindings, relative
 
 
 def _module_top_level_names(module: Any) -> list[str]:
@@ -400,6 +446,25 @@ def _module_top_level_names(module: Any) -> list[str]:
             for alias in node.names:
                 names.add(alias.asname or alias.name.split(".")[0])
     return sorted(names)
+
+
+def _as_same_module_function(value: Any, module: Any) -> Optional[Callable]:
+    """Resolve *value* to an includable same-module function, or None.
+
+    Decorators like ``functools.lru_cache`` replace the function with a
+    wrapper object that fails ``inspect.isfunction`` -- but they set
+    ``__wrapped__``, so unwrapping recovers the original ``def``, whose
+    source (including its decorator lines) is what packaging re-emits.
+    """
+    if not callable(value):
+        return None
+    try:
+        target = value if inspect.isfunction(value) else inspect.unwrap(value)
+    except ValueError:  # wrapper chain contains a cycle
+        return None
+    if inspect.isfunction(target) and inspect.getmodule(target) is module:
+        return target
+    return None
 
 
 def _capture_closure(
@@ -431,12 +496,9 @@ def _capture_closure(
         except ValueError:  # cell not yet filled (still being defined)
             errors.append(name)
             continue
-        if (
-            inspect.isfunction(value)
-            and inspect.getmodule(value) is module
-            and value.__name__ == name
-        ):
-            included_functions[name] = value
+        helper = _as_same_module_function(value, module)
+        if helper is not None and helper.__name__ == name:
+            included_functions[name] = helper
             continue
         if _is_json_serializable(value):
             included_constants[name] = value
@@ -457,7 +519,7 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     """
     module = inspect.getmodule(func)
     module_globals = func.__globals__
-    import_bindings = _module_top_level_imports(module)
+    import_bindings, relative_imports = _module_top_level_imports(module)
 
     included_imports: dict[str, str] = {}
     included_constants: dict[str, Any] = {}
@@ -468,13 +530,21 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
         _capture_closure(func, module, included_constants, included_functions)
     )
 
-    def visit(fn: Callable) -> None:
-        for name in _external_refs(fn):
+    relative_errors: list[str] = []
+
+    def visit(fn: Callable, with_decorators: bool = False) -> None:
+        names = list(_external_refs(fn))
+        if with_decorators:
+            names.extend(_decorator_refs(fn))
+        for name in names:
             if (
                 name in included_imports
                 or name in included_constants
                 or name in included_functions
             ):
+                continue
+            if name in relative_imports:
+                relative_errors.append(name)
                 continue
             if name in import_bindings:
                 included_imports[name] = import_bindings[name]
@@ -488,9 +558,12 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
             value = module_globals[name]
             if value is func:
                 continue  # self-reference; already included as the main function
-            if inspect.isfunction(value) and inspect.getmodule(value) is module:
-                included_functions[name] = value
-                visit(value)  # recurse; dict membership above guards cycles
+            helper = _as_same_module_function(value, module)
+            if helper is not None:
+                included_functions[name] = helper
+                # Helpers keep their decorators, so their decorator names
+                # need resolving too.
+                visit(helper, with_decorators=True)
                 continue
             if _is_json_serializable(value):
                 included_constants[name] = value
@@ -500,9 +573,18 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     # Closure-captured helper functions get the same transitive treatment
     # as helpers found by name reference.
     for captured in list(included_functions.values()):
-        visit(captured)
+        visit(captured, with_decorators=True)
     visit(func)
 
+    if relative_errors:
+        names = ", ".join(sorted(set(relative_errors)))
+        raise PipelineError(
+            f"@task {func.__qualname__!r} references {names}, bound by a "
+            "relative import -- a deployed script runs standalone, with no "
+            "parent package for the import to resolve against, so "
+            "re-emitting it would only fail remotely. Use an absolute "
+            "import instead."
+        )
     if errors:
         names = ", ".join(sorted(set(errors)))
         raise PipelineError(
@@ -525,7 +607,7 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     if included_constants:
         parts.append("")
     for name in included_functions:  # insertion order == dependency-visit order
-        parts.append(_extract_func_source(included_functions[name]))
+        parts.append(_extract_func_source(included_functions[name], keep_decorators=True))
         parts.append("")
     # Free variables were materialized above (or errored); the re-emitted
     # top-level def resolves those names as globals against the captured
@@ -570,6 +652,20 @@ def _package_task_module(func: Callable) -> tuple[str, list[str]]:
             f"@task(package=\"module\"): couldn't read source for module "
             f"{module.__name__!r}: {exc}"
         ) from exc
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) and node.level > 0:
+                raise PipelineError(
+                    f"@task(package=\"module\") can't deploy "
+                    f"{func.__qualname__!r}: module {module.__name__!r} "
+                    "uses a relative import, which cannot resolve in a "
+                    "deployed standalone script (no parent package "
+                    "there). Use absolute imports in modules you deploy."
+                )
     return textwrap.dedent(source), _module_top_level_names(module)
 
 
