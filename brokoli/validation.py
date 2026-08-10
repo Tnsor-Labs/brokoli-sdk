@@ -336,6 +336,38 @@ def validate_pipeline(
         if edge["to"] not in node_ids:
             result.add_error("", "edge", f"Edge references unknown target node: {edge['to'][:12]}")
 
+    # Arity and topology, mirroring engine/validate.go exactly: join takes
+    # exactly 2 inputs, condition exactly 1, and in a multi-node pipeline
+    # every node except migrate must touch an edge ("disconnected" is a
+    # server-side ERROR since v0.10.10, not a style nit).
+    indegree_by_node: dict[str, int] = {nid: 0 for nid in node_ids}
+    touched: set[str] = set()
+    for edge in data.get("edges", []):
+        if edge["to"] in indegree_by_node:
+            indegree_by_node[edge["to"]] += 1
+        touched.add(edge["from"])
+        touched.add(edge["to"])
+    types_by_id = {n["id"]: n["type"] for n in data["nodes"]}
+    names_by_id = {n["id"]: n["name"] for n in data["nodes"]}
+    for nid, ntype in types_by_id.items():
+        if ntype == "join" and indegree_by_node[nid] != 2:
+            result.add_error(
+                names_by_id[nid], "inputs",
+                f"join requires exactly 2 inputs, got {indegree_by_node[nid]}",
+            )
+        if ntype == "condition" and indegree_by_node[nid] != 1:
+            result.add_error(
+                names_by_id[nid], "inputs",
+                f"condition requires exactly 1 input, got {indegree_by_node[nid]}",
+            )
+    if len(node_ids) > 1:
+        for nid in node_ids:
+            if nid not in touched and types_by_id.get(nid) != "migrate":
+                result.add_error(
+                    names_by_id[nid], "edges",
+                    "node is disconnected -- the server rejects this at save",
+                )
+
     # Cycle detection (Kahn's): the server rejects cycles at save time
     # since v0.10.10; catching them locally names the members instead of
     # a deploy-time 400.

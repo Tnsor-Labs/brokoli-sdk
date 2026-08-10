@@ -32,7 +32,6 @@ class TestPipelineBasic:
             sla="07:30 America/New_York",
             tags=["test", "production"],
             depends_on=["upstream"],
-            catch_up=True,
             webhook=True,
         ) as p:
             source_db("S", query="SELECT 1")
