@@ -1686,6 +1686,47 @@ class _SensorWrapper:
 _SLUG_SANITIZE = re.compile(r"[^a-z0-9-]")
 _SLUG_COLLAPSE = re.compile(r"-+")
 
+_HOOK_TYPES = ("webhook", "slack", "email")
+
+
+def _coerce_hook(name: str, value: Any) -> "dict[str, Any] | None":
+    """Normalize a lifecycle hook to the server's Hook shape.
+
+    A URL string becomes a webhook hook; a dict must carry a supported
+    'type' and a 'url'. Python callables are rejected with guidance --
+    they cannot execute server-side, and for years they were silently
+    replaced by an empty placeholder. The server persists hooks since
+    v0.10.10, so what's emitted here is now real.
+    """
+    if value is None:
+        return None
+    if callable(value):
+        raise PipelineError(
+            f"Pipeline({name}=...) got a Python callable, which cannot run "
+            "server-side (and was previously discarded without warning). "
+            "Pass a webhook URL string, or a dict like "
+            "{'type': 'slack', 'url': ...}."
+        )
+    if isinstance(value, str):
+        return {"type": "webhook", "url": value, "enabled": True}
+    if isinstance(value, dict):
+        hook_type = value.get("type", "webhook")
+        url = value.get("url", "")
+        if hook_type not in _HOOK_TYPES or not url:
+            raise PipelineError(
+                f"Pipeline({name}=...) dict needs a 'url' and a 'type' in "
+                f"{_HOOK_TYPES}."
+            )
+        out = {"type": hook_type, "url": url, "enabled": value.get("enabled", True)}
+        if value.get("extra"):
+            out["extra"] = value["extra"]
+        return out
+    raise PipelineError(
+        f"Pipeline({name}=...) must be a URL string or a hook dict, "
+        f"got {type(value).__name__}."
+    )
+
+
 _HOOK_NAMES: tuple[str, ...] = ("on_start", "on_success", "on_failure")
 
 
@@ -1702,35 +1743,51 @@ class Pipeline:
         pid = _SLUG_COLLAPSE.sub("-", pid).strip("-")
         return pid
 
+    _UNSUPPORTED_OPTIONS = ("catch_up", "max_retries", "concurrency")
+
     def __init__(
         self,
         name: str,
         pipeline_id: str | None = None,
         description: str = "",
         schedule: str = "",
-        catch_up: bool = False,
+        catch_up: bool | None = None,
         sla: str = "",
         depends_on: list[str] | None = None,
         tags: list[str] | None = None,
         webhook: bool = False,
-        max_retries: int = 0,
-        concurrency: int = 4,
-        on_start: Callable | None = None,
-        on_success: Callable | None = None,
-        on_failure: Callable | None = None,
+        max_retries: int | None = None,
+        concurrency: int | None = None,
+        on_start: "str | dict[str, Any] | None" = None,
+        on_success: "str | dict[str, Any] | None" = None,
+        on_failure: "str | dict[str, Any] | None" = None,
     ) -> None:
+        # Serialize-or-reject (brokoli-sdk#23 M2): these three were
+        # accepted for years and silently dropped from the compiled IR.
+        # The server has no fields for them, and since v0.10.11 its
+        # strict decoder would reject them anyway -- so accepting them
+        # locally was pure fiction. Reject with the honest state.
+        for option, value in (
+            ("catch_up", catch_up),
+            ("max_retries", max_retries),
+            ("concurrency", concurrency),
+        ):
+            if value is not None:
+                raise PipelineError(
+                    f"Pipeline({option}=...) is not supported by the server "
+                    "and was previously discarded without warning. Remove it; "
+                    "per-node retries= is real, and backfill exists as a "
+                    "server-side operation."
+                )
         self.name = name
         self.pipeline_id = pipeline_id or self._generate_pipeline_id(name)
         self.description = description
         self.schedule = schedule
-        self.catch_up = catch_up
         self.tags: list[str] = tags or []
         self.webhook = webhook
-        self.max_retries = max_retries
-        self.concurrency = concurrency
-        self.on_start = on_start
-        self.on_success = on_success
-        self.on_failure = on_failure
+        self.on_start = _coerce_hook("on_start", on_start)
+        self.on_success = _coerce_hook("on_success", on_success)
+        self.on_failure = _coerce_hook("on_failure", on_failure)
         self.depends_on: list[str] = depends_on or []
 
         # SLA: "07:30 America/New_York" -> deadline + timezone
@@ -2073,10 +2130,14 @@ class Pipeline:
             node_data["config"]["_schema_hint"] = "api_response"
 
     def _build_hooks(self) -> dict[str, dict[str, Any]]:
+        # Hooks are pre-normalized by _coerce_hook at construction; emit
+        # them as-is. (They used to be replaced by an empty webhook
+        # placeholder here, discarding whatever the user passed.)
         hooks: dict[str, dict[str, Any]] = {}
         for hook_name in _HOOK_NAMES:
-            if getattr(self, hook_name, None) is not None:
-                hooks[hook_name] = {"type": "webhook", "url": "", "enabled": True}
+            value = getattr(self, hook_name, None)
+            if value is not None:
+                hooks[hook_name] = dict(value)
         return hooks
 
     def _auto_layout(self) -> dict[str, dict[str, int]]:

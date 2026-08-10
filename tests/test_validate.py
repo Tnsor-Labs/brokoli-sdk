@@ -152,11 +152,23 @@ class TestValidateCondition:
 
     def test_valid_with_expression(self):
         with Pipeline("test") as p:
+            src = source_db("A", query="SELECT 1", conn_id="pg")
+            from brokoli.pipeline import _make_id
+            nid = _make_id("cond")
+            p._add_node(nid, "condition", "Check", {"expression": "row_count > 0"})
+            p._add_edge(src.node_id, nid)
+        vr = validate_pipeline(p)
+        assert vr.valid
+
+    def test_inputless_condition_is_an_error(self):
+        # Mirrors the server: a condition node requires exactly 1 input.
+        with Pipeline("test") as p:
             from brokoli.pipeline import _make_id
             nid = _make_id("cond")
             p._add_node(nid, "condition", "Check", {"expression": "row_count > 0"})
         vr = validate_pipeline(p)
-        assert vr.valid
+        assert not vr.valid
+        assert any("exactly 1 input" in str(e) for e in vr.errors)
 
 
 class TestValidateJoin:
@@ -178,13 +190,15 @@ class TestValidatePipelineLevel:
         assert not vr.valid
         assert any("at least one node" in e.message.lower() for e in vr.errors)
 
-    def test_disconnected_node_warning(self):
+    def test_disconnected_node_is_an_error(self):
+        # Used to be a warning; the server has rejected disconnected
+        # nodes at save time since v0.10.10, so a local pass was fiction.
         with Pipeline("test") as p:
             source_db("A", query="SELECT 1", conn_id="pg")
             source_db("B", query="SELECT 2", conn_id="pg")
         vr = validate_pipeline(p)
-        assert vr.valid  # warnings don't block
-        assert len(vr.warnings) >= 2  # both nodes are disconnected
+        assert not vr.valid
+        assert sum("disconnected" in str(e) for e in vr.errors) == 2
 
 
 class TestValidateEdges:
