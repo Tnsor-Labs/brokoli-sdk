@@ -5,12 +5,13 @@ from __future__ import annotations
 import ast
 import builtins
 import copy
+import sys
 from contextlib import contextmanager
 import inspect
 import json
 import re
 import textwrap
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from brokoli.exceptions import PipelineError
 from brokoli.sentinel import UNSET
@@ -507,7 +508,7 @@ def _capture_closure(
     return errors
 
 
-def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
+def _package_task_auto(func: Callable) -> tuple[str, list[str], list[str]]:
     """Auto-detect and inline module-level names *func* (transitively)
     references. Returns ``(source_text, included_names)``.
 
@@ -617,10 +618,11 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     included_names = sorted(
         set(included_imports) | set(included_constants) | set(included_functions)
     )
-    return "\n".join(parts), included_names
+    requires = _external_import_roots(set(included_imports.values()))
+    return "\n".join(parts), included_names, requires
 
 
-def _package_task_module(func: Callable) -> tuple[str, list[str]]:
+def _package_task_module(func: Callable) -> tuple[str, list[str], list[str]]:
     """Return the entire source of *func*'s containing module, verbatim.
 
     The explicit ``package="module"`` escape hatch -- broader/heavier than
@@ -666,7 +668,35 @@ def _package_task_module(func: Callable) -> tuple[str, list[str]]:
                     "deployed standalone script (no parent package "
                     "there). Use absolute imports in modules you deploy."
                 )
-    return textwrap.dedent(source), _module_top_level_names(module)
+    bindings, _relative = _module_top_level_imports(module)
+    requires = _external_import_roots(set(bindings.values()))
+    return textwrap.dedent(source), _module_top_level_names(module), requires
+
+
+def _external_import_roots(statements: Iterable[str]) -> list[str]:
+    """Root module names of *statements* that aren't in the standard
+    library -- dependency-declaration groundwork (brokoli-sdk#22 M3): the
+    deployed script needs these importable on the host Python, and the
+    package block should say so instead of leaving it to a remote
+    ImportError. On interpreters without ``sys.stdlib_module_names``
+    (< 3.10) the distinction can't be made cheaply, so nothing is listed.
+    """
+    stdlib = getattr(sys, "stdlib_module_names", None)
+    if stdlib is None:
+        return []
+    roots: set[str] = set()
+    for stmt in statements:
+        try:
+            tree = ast.parse(textwrap.dedent(stmt))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    roots.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                roots.add(node.module.split(".")[0])
+    return sorted(r for r in roots if r not in stdlib and r != "brokoli")
 
 
 def _package_task_source(
@@ -686,15 +716,17 @@ def _package_task_source(
         )
 
     if mode == "module":
-        source_text, included = _package_task_module(func)
+        source_text, included, requires = _package_task_module(func)
         package_meta = {
             "mode": "module",
             "included": included,
             "callable": f"{func.__module__}:{func.__qualname__}",
         }
+        if requires:
+            package_meta["requires_modules"] = requires
         return source_text, package_meta
 
-    source_text, included = _package_task_auto(func)
+    source_text, included, requires = _package_task_auto(func)
     if not included:
         return source_text, None
     package_meta = {
@@ -702,6 +734,8 @@ def _package_task_source(
         "included": included,
         "callable": f"{func.__module__}:{func.__qualname__}",
     }
+    if requires:
+        package_meta["requires_modules"] = requires
     return source_text, package_meta
 
 
@@ -1357,9 +1391,11 @@ class _SourceWrapper:
     def __call__(self, node_key: Optional[str] = None) -> NodeRef:
         if node_key is None and self._auto_ref is not None:
             return self._auto_ref
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, "auto")
         script = SOURCE_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
+        if package_meta is not None:
+            config["package"] = package_meta
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
@@ -1399,9 +1435,11 @@ class _SinkWrapper:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, "auto")
         script = SINK_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
+        if package_meta is not None:
+            config["package"] = package_meta
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
@@ -1444,9 +1482,11 @@ class _FilterWrapper:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, "auto")
         script = FILTER_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
+        if package_meta is not None:
+            config["package"] = package_meta
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
@@ -1489,9 +1529,11 @@ class _MapWrapper:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, "auto")
         script = MAP_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
+        if package_meta is not None:
+            config["package"] = package_meta
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
@@ -1536,7 +1578,7 @@ class _ValidateWrapper:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, "auto")
         action = 'raise ValueError(f"Validation failed: {_message}")' if self._on_failure == "block" else ""
         script = VALIDATE_WRAPPER_TEMPLATE.format(
             func_source=func_source,
@@ -1544,6 +1586,8 @@ class _ValidateWrapper:
             on_failure_action=action,
         )
         config: dict[str, Any] = {"language": "python", "script": script}
+        if package_meta is not None:
+            config["package"] = package_meta
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
@@ -1590,7 +1634,7 @@ class _SensorWrapper:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
-        func_source = _extract_func_source(self._func)
+        func_source, package_meta = _package_task_source(self._func, "auto")
         # An explicit UNSET/None timeout means "poll forever" -- the
         # generated script skips its timeout check, and the node's
         # orchestrator-level ``timeout`` config key (poll timeout + a 60s
@@ -1604,6 +1648,8 @@ class _SensorWrapper:
             timeout=repr(self._timeout) if has_timeout else "None",
         )
         config: dict[str, Any] = {"language": "python", "script": script}
+        if package_meta is not None:
+            config["package"] = package_meta
         if has_timeout:
             config["timeout"] = self._timeout + 60
         node_id = self._pipeline._allocate_node_id(
