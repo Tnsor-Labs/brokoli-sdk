@@ -101,3 +101,20 @@ async def async_helper(rows):
 def clean_with_async_helper(rows):
     """A sync task referencing an async module-level helper."""
     return async_helper(rows)
+
+
+def shared_helper(row):
+    """Module-level helper captured through closures in tests."""
+    return dict(row, seen=True)
+
+
+def make_work_with_local_helper():
+    """Factory whose task closes over a factory-local helper function."""
+
+    def local_scale(row):
+        return dict(row, scaled=True)
+
+    def work(rows):
+        return [local_scale(r) for r in rows]
+
+    return work
