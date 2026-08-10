@@ -219,14 +219,17 @@ def _make_id(name: str) -> str:
 _NODE_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
-def _extract_func_source(func: Callable) -> str:
+def _extract_func_source(func: Callable, allow_freevars: bool = False) -> str:
     """Return the dedented source of *func*, stripping any decorator lines.
 
     Rejects shapes the extraction below cannot represent, instead of
     emitting a script that silently omits them: the scan captures from the
     first ``def `` line, so an ``async def`` never matches and a lambda has
     no ``def`` line at all -- both used to produce a deployed script with
-    no function in it, which only failed remotely.
+    no function in it, which only failed remotely. Closure variables are
+    likewise rejected unless the caller has already materialized them into
+    the deployed scope (``allow_freevars=True`` -- only @task auto
+    packaging does this, via ``_capture_closure``).
     """
     if inspect.iscoroutinefunction(func):
         raise PipelineError(
@@ -240,6 +243,15 @@ def _extract_func_source(func: Callable) -> str:
             "Lambdas cannot be deployed: their source cannot be extracted "
             "as a standalone function. Define a named function with `def` "
             "instead."
+        )
+    if func.__code__.co_freevars and not allow_freevars:
+        names = ", ".join(sorted(func.__code__.co_freevars))
+        raise PipelineError(
+            f"{func.__qualname__!r} closes over {names} from an enclosing "
+            "scope, which a deployed script can't carry. Move the value to "
+            "module level or pass it through the data instead. (@task with "
+            "package=\"auto\" captures JSON-serializable closure values "
+            "automatically; the other decorators do not.)"
         )
 
     source = inspect.getsource(func)
@@ -390,6 +402,49 @@ def _module_top_level_names(module: Any) -> list[str]:
     return sorted(names)
 
 
+def _capture_closure(
+    func: Callable,
+    module: Any,
+    included_constants: dict[str, Any],
+    included_functions: dict[str, Callable],
+) -> list[str]:
+    """Materialize *func*'s closure cells into the deployed scope.
+
+    A task defined inside a factory (``def make(threshold): @task ...``)
+    references enclosing-scope locals via free variables, which a
+    re-emitted top-level ``def`` resolves as globals instead -- so any
+    JSON-serializable cell value can be captured as a module-level
+    constant in the script, frozen at serialization time (the same
+    contract module constants already have). Module-level functions
+    captured under their own name are included as helpers. Everything
+    else is returned as an error name for the caller's names-the-symbol
+    failure.
+    """
+    code = func.__code__
+    if not code.co_freevars:
+        return []
+    cells = func.__closure__ or ()
+    errors: list[str] = []
+    for name, cell in zip(code.co_freevars, cells):
+        try:
+            value = cell.cell_contents
+        except ValueError:  # cell not yet filled (still being defined)
+            errors.append(name)
+            continue
+        if (
+            inspect.isfunction(value)
+            and inspect.getmodule(value) is module
+            and value.__name__ == name
+        ):
+            included_functions[name] = value
+            continue
+        if _is_json_serializable(value):
+            included_constants[name] = value
+            continue
+        errors.append(name)
+    return errors
+
+
 def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     """Auto-detect and inline module-level names *func* (transitively)
     references. Returns ``(source_text, included_names)``.
@@ -408,6 +463,10 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     included_constants: dict[str, Any] = {}
     included_functions: dict[str, Callable] = {}
     errors: list[str] = []
+
+    errors.extend(
+        _capture_closure(func, module, included_constants, included_functions)
+    )
 
     def visit(fn: Callable) -> None:
         for name in _external_refs(fn):
@@ -438,15 +497,20 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
                 continue
             errors.append(name)
 
+    # Closure-captured helper functions get the same transitive treatment
+    # as helpers found by name reference.
+    for captured in list(included_functions.values()):
+        visit(captured)
     visit(func)
 
     if errors:
         names = ", ".join(sorted(set(errors)))
         raise PipelineError(
-            f"@task {func.__qualname__!r} references {names}, which "
-            "can't be safely auto-included in its deployed package (not "
-            "JSON-serializable data, a same-module helper function, or an "
-            "imported name). Either remove the reference, or use "
+            f"@task {func.__qualname__!r} references or closes over "
+            f"{names}, which can't be safely auto-included in its deployed "
+            "package (not JSON-serializable data, a same-module helper "
+            "function, or an imported name). Either remove the reference, "
+            "move the value somewhere serializable, or use "
             "@task(package=\"module\") to deploy the whole containing "
             "module instead."
         )
@@ -463,7 +527,10 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str]]:
     for name in included_functions:  # insertion order == dependency-visit order
         parts.append(_extract_func_source(included_functions[name]))
         parts.append("")
-    parts.append(_extract_func_source(func))
+    # Free variables were materialized above (or errored); the re-emitted
+    # top-level def resolves those names as globals against the captured
+    # constants/helpers.
+    parts.append(_extract_func_source(func, allow_freevars=True))
 
     included_names = sorted(
         set(included_imports) | set(included_constants) | set(included_functions)
@@ -478,6 +545,16 @@ def _package_task_module(func: Callable) -> tuple[str, list[str]]:
     auto-detection (the whole file ships, not just what's referenced) but
     always works, for cases "auto" can't handle.
     """
+    if func.__code__.co_freevars:
+        names = ", ".join(sorted(func.__code__.co_freevars))
+        raise PipelineError(
+            f"@task(package=\"module\") can't deploy {func.__qualname__!r}: "
+            f"it closes over {names} from an enclosing scope, and module "
+            "mode ships the file verbatim -- the deployed wrapper would "
+            "call a function that only exists inside its factory. Use "
+            "package=\"auto\" (which captures JSON-serializable closure "
+            "values) or move the task to module level."
+        )
     module = inspect.getmodule(func)
     if module is None:
         raise PipelineError(
