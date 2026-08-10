@@ -53,7 +53,16 @@ class ContextError(BrokoliError):
 
 
 class ParseError(BrokoliError):
-    """Raised when a quality rule string cannot be parsed."""
+    """Raised when a quality rule string cannot be parsed.
+
+    This is the same class ``brokoli.parsing`` raises -- there used to be
+    two unrelated ``ParseError`` classes with this name, and catching this
+    one never caught what ``quality_check`` actually raised.
+    """
+
+    def __init__(self, rule_string: str, reason: str) -> None:
+        self.rule_string = rule_string
+        super().__init__(f"Cannot parse rule '{rule_string}': {reason}")
 
     def __init__(self, rule_string: str, reason: str) -> None:
         self.rule_string = rule_string

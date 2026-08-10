@@ -75,3 +75,29 @@ def clean_with_builtin_only(rows):
     """Uses builtins (len, dict, sorted) -- these must NOT be treated as
     external references needing inclusion."""
     return sorted(rows, key=len)[: len(rows)]
+
+
+INFINITY_THRESHOLD = float("inf")
+
+NESTED_NAN = {"bounds": {"upper": float("nan")}}
+
+
+def clean_with_inf_ref(rows):
+    """References a module-level infinity -- json-dumpable by default but
+    not emittable as a valid Python literal via repr()."""
+    return [r for r in rows if r.get("score", 0) < INFINITY_THRESHOLD]
+
+
+def clean_with_nested_nan_ref(rows):
+    """Same failure nested inside an otherwise-serializable dict."""
+    return [dict(r, **NESTED_NAN) for r in rows]
+
+
+async def async_helper(rows):
+    """An async helper a sync task might reference."""
+    return rows
+
+
+def clean_with_async_helper(rows):
+    """A sync task referencing an async module-level helper."""
+    return async_helper(rows)
