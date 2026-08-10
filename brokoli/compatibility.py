@@ -21,9 +21,17 @@ class LegacyServerWarning(UserWarning):
 
 @dataclass(frozen=True)
 class ServerCapabilities:
-    """Capability fields required by the current SDK preflight."""
+    """Capability fields required by the current SDK preflight.
+
+    ``supported_execution_features`` is ``None`` when the server predates
+    the field (pre-v0.10.11): those servers execute several gated
+    features without advertising them, so absence means "skip feature
+    gating", never "no features". A present-but-malformed field fails
+    closed like every other capability field.
+    """
 
     supported_ir_versions: tuple[str, ...]
+    supported_execution_features: tuple[str, ...] | None = None
 
 
 def _legacy_or_raise(message: str, allow_legacy_server: bool) -> None:
@@ -110,7 +118,53 @@ def fetch_server_capabilities(
             "'supported_ir_versions' must be a non-empty list of strings."
         )
 
-    return ServerCapabilities(tuple(versions))
+    features = payload.get("supported_execution_features")
+    if features is not None and (
+        not isinstance(features, list)
+        or any(not isinstance(f, str) or not f for f in features)
+    ):
+        raise CompatibilityError(
+            f"Server {server} returned an invalid /api/capabilities payload: "
+            "'supported_execution_features' must be a list of non-empty strings."
+        )
+
+    return ServerCapabilities(
+        tuple(versions),
+        None if features is None else tuple(features),
+    )
+
+
+# Feature names follow the server's vocabulary (models.SupportedExecutionFeatures
+# in the core repo). "dataset-map"/"dataset-filter" are reserved names the
+# server deliberately does not advertise yet -- its runtime rejects
+# SDK-emitted configs for those nodes -- so requiring them here correctly
+# blocks deployment to any feature-advertising server until they run.
+def required_execution_features(payload: dict[str, Any]) -> set[str]:
+    """The execution features a compiled pipeline payload depends on."""
+    required: set[str] = set()
+    for edge in payload.get("edges") or []:
+        if isinstance(edge, dict) and "condition" in edge:
+            required.add("conditional-routing")
+            break
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        config = node.get("config") or {}
+        node_type = node.get("type")
+        if "expansion" in config:
+            required.add("dynamic-expansion")
+        if node_type == "union":
+            required.add("union")
+        elif node_type == "dataset_map":
+            required.add("dataset-map")
+        elif node_type == "dataset_filter":
+            required.add("dataset-filter")
+        # Plain pagination long predates feature advertising; the
+        # execution policy block is what implies checkpoint/page-retry
+        # runtime semantics.
+        if "execution" in config:
+            required.add("pagination-checkpoints")
+    return required
 
 
 def preflight_server_compatibility(
@@ -149,3 +203,18 @@ def preflight_server_compatibility(
                 "server or use a compatible SDK. --allow-legacy-server cannot "
                 "override a version mismatch reported by the server."
             )
+
+        if capabilities.supported_execution_features is not None:
+            missing = required_execution_features(payload) - set(
+                capabilities.supported_execution_features
+            )
+            if missing:
+                name = getattr(pipeline, "name", "<unnamed>")
+                missing_text = ", ".join(sorted(missing))
+                raise CompatibilityError(
+                    f"Pipeline {name!r} requires execution feature(s) the "
+                    f"server does not support: {missing_text}. The server "
+                    "advertises what it can actually run; deploying anyway "
+                    "would persist a pipeline that fails at run time. "
+                    "--allow-legacy-server cannot override this."
+                )

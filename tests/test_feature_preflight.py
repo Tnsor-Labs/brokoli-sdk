@@ -1,0 +1,143 @@
+"""Execution-feature preflight gating (sdk#15 M3, core#109 M3 counterpart).
+
+The server's ``supported_execution_features`` lists only what it can
+actually RUN. The preflight contract here:
+
+  - field absent (pre-v0.10.11 server): feature gating is skipped -- those
+    servers execute several gated features without advertising them, so
+    absence must never read as "no features";
+  - field present: every feature the compiled payload depends on must be
+    advertised, or deployment fails naming the missing features, and
+    --allow-legacy-server cannot override it;
+  - field present but malformed: fail closed, like every capability field.
+"""
+
+import json
+import urllib.request
+
+import pytest
+
+from brokoli import Pipeline, sink_file, source_api, source_file, union
+from brokoli.compatibility import (
+    preflight_server_compatibility,
+    required_execution_features,
+)
+from brokoli.exceptions import CompatibilityError
+from brokoli.pagination import offset_pages
+
+
+def _serve_capabilities(monkeypatch, payload):
+    class _Resp:
+        def read(self):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, timeout=0: _Resp()
+    )
+
+
+def _conditional_pipeline():
+    from brokoli import condition_node, notify, transform
+
+    with Pipeline("cond", pipeline_id="cond") as p:
+        src = source_file("Read", path="/tmp/in.csv", format="csv")
+        gate = condition_node("Gate", expression="row_count > 0")
+        src >> gate
+        gate.when(transform("Keep", rules=[{"type": "rename", "mapping": {"a": "b"}}]))
+        gate.otherwise(
+            notify("Alert", notify_type="webhook", webhook_url="https://h.example/x")
+        )
+    return p
+
+
+def _paginated_pipeline():
+    with Pipeline("paged", pipeline_id="paged") as p:
+        src = source_api(
+            "Fetch",
+            url="https://api.example.com/x",
+            pagination=offset_pages(page_size=10).with_execution(page_max_retries=2),
+        )
+        src >> sink_file("Save", path="/tmp/out.csv", format="csv")
+    return p
+
+
+class TestRequiredFeatures:
+    def test_conditional_and_pagination_and_union_detected(self):
+        p = _conditional_pipeline()
+        assert required_execution_features(p.to_json()) == {"conditional-routing"}
+
+        paged = _paginated_pipeline()
+        assert required_execution_features(paged.to_json()) == {
+            "pagination-checkpoints"
+        }
+
+        with Pipeline("u", pipeline_id="u") as up:
+            a = source_file("A", path="/a.csv", format="csv")
+            b = source_file("B", path="/b.csv", format="csv")
+            union("Merge", a, b) >> sink_file("S", path="/o.csv", format="csv")
+        assert required_execution_features(up.to_json()) == {"union"}
+
+    def test_plain_pipeline_requires_nothing(self):
+        with Pipeline("plain", pipeline_id="plain") as p:
+            src = source_file("Read", path="/tmp/in.csv", format="csv")
+            src >> sink_file("Save", path="/tmp/out.csv", format="csv")
+        assert required_execution_features(p.to_json()) == set()
+
+
+class TestFeatureGating:
+    FULL = ["conditional-routing", "dynamic-expansion", "union", "pagination-checkpoints"]
+
+    def test_absent_field_skips_feature_gating(self, monkeypatch):
+        _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
+        preflight_server_compatibility([_conditional_pipeline()], "http://s")
+
+    def test_advertised_features_pass(self, monkeypatch):
+        _serve_capabilities(
+            monkeypatch,
+            {"supported_ir_versions": ["2.0", "2.1"],
+             "supported_execution_features": self.FULL},
+        )
+        preflight_server_compatibility(
+            [_conditional_pipeline(), _paginated_pipeline()], "http://s"
+        )
+
+    def test_missing_feature_fails_naming_it(self, monkeypatch):
+        _serve_capabilities(
+            monkeypatch,
+            {"supported_ir_versions": ["2.0", "2.1"],
+             "supported_execution_features": ["union"]},
+        )
+        with pytest.raises(CompatibilityError, match="conditional-routing"):
+            preflight_server_compatibility([_conditional_pipeline()], "http://s")
+
+    def test_legacy_flag_cannot_override_feature_mismatch(self, monkeypatch):
+        _serve_capabilities(
+            monkeypatch,
+            {"supported_ir_versions": ["2.0", "2.1"],
+             "supported_execution_features": []},
+        )
+        with pytest.raises(CompatibilityError, match="cannot override"):
+            preflight_server_compatibility(
+                [_paginated_pipeline()], "http://s", allow_legacy_server=True
+            )
+
+    def test_malformed_feature_field_fails_closed(self, monkeypatch):
+        _serve_capabilities(
+            monkeypatch,
+            {"supported_ir_versions": ["2.0"],
+             "supported_execution_features": [1, ""]},
+        )
+        with pytest.raises(CompatibilityError, match="supported_execution_features"):
+            preflight_server_compatibility([], "http://s")
+
+    def test_dataset_ops_blocked_on_feature_advertising_servers(self, monkeypatch):
+        # The server deliberately does not advertise dataset-map/filter --
+        # its runtime rejects SDK-emitted configs -- so a gating client
+        # refuses them at deploy instead of failing at run time.
+        payload = {
+            "name": "ds", "ir_version": "2.0",
+            "nodes": [{"id": "m", "type": "dataset_map", "name": "M",
+                       "config": {"function": {"name": "f"}}}],
+            "edges": [],
+        }
+        assert required_execution_features(payload) == {"dataset-map"}
