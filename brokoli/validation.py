@@ -169,6 +169,26 @@ def _validate_condition(name: str, config: dict[str, Any], result: ValidationRes
         result.add_error(name, "expression", "Condition node requires an 'expression' or 'script'")
 
 
+# Enumerations transcribed from the core engine's switches; anything
+# outside them is silently coerced server-side (join defaults to inner,
+# sink_file to json), which is exactly the silent-mismatch class this
+# validator exists to catch.
+_JOIN_TYPES = {"inner", "left", "right", "full", "outer", "full_outer"}
+_NOTIFY_TYPES = {"slack", "webhook"}
+_RETRY_BACKOFFS = {"fixed", "exponential", "linear"}
+_SINK_FILE_FORMATS = {"csv", "json", "sql"}
+
+
+def _validate_enum(name, config, key, allowed, result):
+    value = config.get(key)
+    if value is not None and value != "" and value not in allowed:
+        result.add_error(
+            name, key,
+            f"'{key}' value {value!r} is not one of {sorted(allowed)} -- the "
+            "server would silently coerce it rather than honor it",
+        )
+
+
 def _validate_sink_db(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("table"):
         result.add_error(name, "table", "Sink DB requires a 'table'")
@@ -179,6 +199,7 @@ def _validate_sink_db(name: str, config: dict[str, Any], result: ValidationResul
 def _validate_sink_file(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("path"):
         result.add_error(name, "path", "Sink File requires a 'path'")
+    _validate_enum(name, config, "format", _SINK_FILE_FORMATS, result)
 
 
 def _validate_sink_api(name: str, config: dict[str, Any], result: ValidationResult) -> None:
@@ -189,6 +210,7 @@ def _validate_sink_api(name: str, config: dict[str, Any], result: ValidationResu
 def _validate_join(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("left_key") and not config.get("right_key"):
         result.add_error(name, "on", "Join requires join keys (on='left_key=right_key')")
+    _validate_enum(name, config, "join_type", _JOIN_TYPES, result)
 
 
 def _validate_dbt(name: str, config: dict[str, Any], result: ValidationResult) -> None:
@@ -206,6 +228,7 @@ def _validate_dbt(name: str, config: dict[str, Any], result: ValidationResult) -
 def _validate_notify(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("webhook_url"):
         result.add_error(name, "webhook_url", "Notify node requires a 'webhook_url'")
+    _validate_enum(name, config, "notify_type", _NOTIFY_TYPES, result)
 
 
 def _validate_migrate(name: str, config: dict[str, Any], result: ValidationResult) -> None:
@@ -296,6 +319,9 @@ def validate_pipeline(
         validator = _NODE_VALIDATORS.get(ntype)
         if validator is not None:
             validator(name, config, result)
+        # retry_backoff is accepted on several node types; the engine
+        # only implements these strategies.
+        _validate_enum(name, config, "retry_backoff", _RETRY_BACKOFFS, result)
 
     if not has_source:
         result.add_warning(
@@ -309,6 +335,32 @@ def validate_pipeline(
             result.add_error("", "edge", f"Edge references unknown source node: {edge['from'][:12]}")
         if edge["to"] not in node_ids:
             result.add_error("", "edge", f"Edge references unknown target node: {edge['to'][:12]}")
+
+    # Cycle detection (Kahn's): the server rejects cycles at save time
+    # since v0.10.10; catching them locally names the members instead of
+    # a deploy-time 400.
+    indegree = {nid: 0 for nid in node_ids}
+    adjacency: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    for edge in data.get("edges", []):
+        src, dst = edge["from"], edge["to"]
+        if src in node_ids and dst in node_ids:
+            adjacency[src].append(dst)
+            indegree[dst] += 1
+    queue = [nid for nid, deg in indegree.items() if deg == 0]
+    visited = 0
+    while queue:
+        current = queue.pop()
+        visited += 1
+        for nxt in adjacency[current]:
+            indegree[nxt] -= 1
+            if indegree[nxt] == 0:
+                queue.append(nxt)
+    if visited < len(node_ids):
+        members = sorted(nid for nid, deg in indegree.items() if deg > 0)
+        result.add_error(
+            "", "edges",
+            "Pipeline contains a cycle involving: " + ", ".join(members),
+        )
 
     # Orphan detection
     connected: set[str] = set()

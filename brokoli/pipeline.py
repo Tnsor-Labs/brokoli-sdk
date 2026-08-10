@@ -1073,6 +1073,12 @@ class _MultiRef:
     def __rshift__(self, other: Any) -> "NodeRef | _MultiRef":
         """``[a, b] >> c`` -- fan-in: all connect to target."""
         if isinstance(other, list):
+            if len(other) != len(self.refs):
+                raise PipelineError(
+                    f"Cannot pair {len(self.refs)} upstream node(s) with "
+                    f"{len(other)} target(s): the lists must match one-to-one. "
+                    "The extra entries would previously be dropped silently."
+                )
             pairs = list(zip(self.refs, other))
             with self.pipeline._transaction(other):
                 targets = [ref._resolve(item) for ref, item in pairs]
