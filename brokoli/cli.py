@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -48,20 +49,47 @@ def _make_headers(auth_header: str, content_type: str | None = None) -> dict[str
     return headers
 
 
+def _pipeline_module_name(filepath: str) -> str:
+    """A unique, readable sys.modules name for a loaded pipeline file."""
+    stem = re.sub(r"\W+", "_", Path(filepath).stem) or "brokoli_pipeline"
+    name = f"_brokoli_{stem}"
+    suffix = 1
+    while name in sys.modules:
+        suffix += 1
+        name = f"_brokoli_{stem}_{suffix}"
+    return name
+
+
 def load_pipeline_from_file(filepath: str) -> list[Any]:
     """Import a Python file and extract all Pipeline objects.
+
+    The module is registered in ``sys.modules`` (as the ``importlib`` docs
+    require for ``module_from_spec``) and stays registered for the process
+    lifetime: task packaging resolves each function's containing module via
+    ``inspect.getmodule`` at serialization time, which walks
+    ``sys.modules`` -- without the registration, import detection came back
+    empty and any task referencing a top-level import failed to package
+    under the CLI while working when the same file was imported normally.
+    Each file gets a unique module name so a directory deploy doesn't make
+    later files shadow earlier ones.
 
     Raises:
         DeployError: If the file cannot be loaded or contains no pipelines.
     """
     from brokoli.pipeline import Pipeline
 
-    spec = importlib.util.spec_from_file_location("_brokoli_module", filepath)
+    module_name = _pipeline_module_name(filepath)
+    spec = importlib.util.spec_from_file_location(module_name, filepath)
     if spec is None or spec.loader is None:
         raise DeployError(filepath, 0, f"Cannot load module from {filepath}")
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[module_name]
+        raise
 
     pipelines = [obj for obj in vars(module).values() if isinstance(obj, Pipeline)]
     if not pipelines:
