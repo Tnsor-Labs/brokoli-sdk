@@ -101,19 +101,24 @@ class TestFactoryCapture:
                 work()
 
 
-class TestNonPackagingDecoratorsRejectClosures:
-    def test_filter_decorator_rejects_closure(self):
+class TestOtherDecoratorsCaptureClosuresToo:
+    # Since #22 M3 unified all decorators onto auto packaging, closures
+    # are captured everywhere -- this used to assert @filter *rejected*
+    # them, back when only @task could package.
+    def test_filter_decorator_captures_closure(self):
         from brokoli import filter as brokoli_filter
 
         floor = 10
-        with Pipeline("test"):
+        with Pipeline("test") as p:
 
             @brokoli_filter("Keep")
             def keep(row):
                 return row.get("v", 0) > floor
 
-            with pytest.raises(PipelineError, match="floor"):
-                keep()
+            keep()
+        cfg = [n for n in p.to_json()["nodes"] if n["name"] == "Keep"][0]["config"]
+        assert "floor = 10" in cfg["script"]
+        assert "floor" in cfg["package"]["included"]
 
 
 class TestClosureCaptureThroughCLILoader:
