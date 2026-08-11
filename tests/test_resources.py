@@ -99,3 +99,40 @@ class TestConnectionCompilesToString:
         assert ir_digest(build(Connection("warehouse")).to_json()) == ir_digest(
             build("warehouse").to_json()
         )
+
+
+class TestInterpolationRefs:
+    def test_compile_to_namespaced_tokens(self):
+        from brokoli import Secret, Variable, Param, EnvVar
+        assert Secret("api_token").ir_value() == "${secret.api_token}"
+        assert Variable("region").ir_value() == "${var.region}"
+        assert Param("day").ir_value() == "${param.day}"
+        assert EnvVar("HOME").ir_value() == "${env.HOME}"
+
+    def test_str_is_the_token_for_fstring_embedding(self):
+        from brokoli import Param
+        assert f"https://api/{Param('date')}/x" == "https://api/${param.date}/x"
+
+    def test_full_value_in_nested_dict_normalizes(self):
+        from brokoli import Pipeline, source_api, Secret
+        with Pipeline("t", pipeline_id="t") as p:
+            source_api("Fetch", url="https://x",
+                       headers={"Authorization": Secret("token")})
+        assert _cfg(p, "Fetch")["headers"]["Authorization"] == "${secret.token}"
+
+    def test_embedded_in_string_passes_through(self):
+        from brokoli import Pipeline, source_db, Variable
+        with Pipeline("t", pipeline_id="t") as p:
+            source_db("Q", query=f"SELECT 1 WHERE r='{Variable('region')}'")
+        assert _cfg(p, "Q")["query"] == "SELECT 1 WHERE r='${var.region}'"
+
+    def test_distinct_types(self):
+        from brokoli import Secret, Variable, Param
+        assert Secret("x") != Variable("x")
+        assert Secret("x") != Param("x")
+        assert Secret("x") == Secret("x")
+
+    def test_name_validated(self):
+        from brokoli import Secret
+        with pytest.raises(ValueError, match="may contain only"):
+            Secret("has space")
