@@ -54,15 +54,19 @@ Once a pipeline is deployed, trigger and observe runs from the CLI —
 no need to leave the terminal for the console:
 
 ```bash
-brokoli run orders --server https://your-server            # trigger (async)
-brokoli run orders --server ... --param date=2026-08-11    # with parameters
-brokoli status <run-id> --server https://your-server       # check a run
+brokoli run orders --server ...                       # trigger (async)
+brokoli run orders --server ... --param date=2026-08-11
+brokoli status <run-id> --server ...                  # check a run
+brokoli logs   <run-id> --server ... [--level error] [--node <id>]
+brokoli cancel <run-id> --server ...                  # stop an in-progress run
+brokoli retry  <run-id> --server ...                  # resume from where it failed
+brokoli backfill orders --start 2026-01-01 --end 2026-01-07 --server ...
 ```
 
-`run` accepts the pipeline's logical id, its name, or the server's
-internal id. Auth via `--api-key` or the `BROKOLI_TOKEN` env var. (More
-operational commands — logs, cancel, retry, backfill — are landing under
-sdk#15 M3.)
+`run` and `backfill` accept the pipeline's logical id, its name, or the
+server's internal id. `retry` resumes a failed run, preserving successful
+nodes rather than starting over. Auth via `--api-key` or the
+`BROKOLI_TOKEN` env var.
 
 ## Authoring vs. run-time side effects
 
