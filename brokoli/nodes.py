@@ -6,6 +6,7 @@ from typing import Optional, Any
 
 from brokoli.exceptions import ContextError
 from brokoli.pagination import PaginationStrategy
+from brokoli.resources import ResourceRef
 from brokoli.parsing import ParseError, parse_quality_rule
 from brokoli.pipeline import (
     Pipeline, NodeRef, ConditionRef, _MultiRef,
@@ -44,19 +45,32 @@ def _build_config(base: dict, optional: dict) -> dict:
     Returns:
         Merged config dict.
     """
-    config: dict = dict(base)
+    config: dict = {k: _normalize_value(v) for k, v in base.items()}
     for key, value in optional.items():
         if value is UNSET:
             continue
         if value is None:
             continue
         if isinstance(value, dict):
-            config[key] = dict(value)
+            config[key] = {k: _normalize_value(v) for k, v in value.items()}
         elif isinstance(value, list):
-            config[key] = list(value)
+            config[key] = [_normalize_value(v) for v in value]
         else:
-            config[key] = value
+            config[key] = _normalize_value(value)
     return config
+
+
+def _normalize_value(value: Any) -> Any:
+    """Compile a typed resource reference to its wire value; pass others through.
+
+    Lets ``conn_id=Connection("warehouse")`` be used interchangeably with the
+    plain string -- the ``Connection`` becomes its bare name in the IR, so
+    validation, serialization, and the backend all see the string they
+    already expect.
+    """
+    if isinstance(value, ResourceRef):
+        return value.ir_value()
+    return value
 
 
 def _register_node(

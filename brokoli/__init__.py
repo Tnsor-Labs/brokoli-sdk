@@ -23,14 +23,19 @@ from brokoli.pagination import (
     offset_pages, cursor_pages, numbered_pages,
     next_link_pages, link_header_pages,
 )
+from brokoli.resources import Connection, ResourceRef
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_ir
 
 __version__ = "0.2.0"
 __all__ = [
     # Core
     "Pipeline", "TaskResult", "ParseError",
-    # Typed node references (brokoli-sdk#2) -- see brokoli.pipeline
+    # Typed node references (brokoli-sdk#2) -- see brokoli.pipeline. These are
+    # authoring-time DATA refs: they point at another node's output.
     "NodeRef", "ConditionRef", "ScalarRef", "ArtifactRef", "DatasetRef", "CollectionRef",
+    # Typed RESOURCE refs (brokoli-sdk#15 M4) -- see brokoli.resources. These
+    # point at a server-side resource (a connection), distinct from data refs.
+    "Connection", "ResourceRef",
     # Decorators
     "task", "condition", "source", "sink", "filter", "map", "validate", "sensor",
     # Built-in sources

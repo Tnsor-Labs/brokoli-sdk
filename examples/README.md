@@ -112,6 +112,24 @@ import free of run-time side effects:
       client = connect_to_warehouse()   # skipped during compile/deploy
   ```
 
+## Typed resource references
+
+Instead of an opaque `conn_id` string, you can pass a typed `Connection`:
+
+```python
+from brokoli import source_db, Connection
+
+raw = source_db("Extract", query="…", conn_id=Connection("warehouse"))
+```
+
+`Connection("warehouse")` compiles to the connection name on the wire — so
+it's interchangeable with the string `"warehouse"` and validated the same
+way at deploy — but it's a distinct type a checker can verify, it validates
+its name at construction, and it documents intent. It's a *resource*
+reference (something configured on the server), deliberately distinct from
+authoring-time *data* references like `DatasetRef` (a node's output in the
+DAG).
+
 ## Local testing (no server)
 
 `brokoli.testing` lets you assert graph shape and task logic without
