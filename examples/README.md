@@ -68,6 +68,12 @@ server's internal id. `retry` resumes a failed run, preserving successful
 nodes rather than starting over. Auth via `--api-key` or the
 `BROKOLI_TOKEN` env var.
 
+`deploy` prints a stable **IR digest** (`sha256:…`) of exactly what it
+deployed — the same content digests identically whether it's a create or
+an update, so a redeploy that changed nothing is visible as an unchanged
+digest. `brokoli compile <file> --digest` prints the same digest without a
+server, for CI to capture and diff across builds.
+
 ## Authoring vs. run-time side effects
 
 `compile`, `validate`, and `deploy` **import your file** to discover its
