@@ -175,6 +175,11 @@ def _validate_condition(name: str, config: dict[str, Any], result: ValidationRes
 # validator exists to catch.
 _JOIN_TYPES = {"inner", "left", "right", "full", "outer", "full_outer"}
 _NOTIFY_TYPES = {"slack", "webhook"}
+# sink_db generates the write SQL from the input rows (append/overwrite/upsert).
+_SINK_DB_MODES = {"append", "overwrite", "upsert"}
+# migrate copies rows with a plain insert; the backend ignores anything else,
+# so only append is honest. Use sink_db for overwrite/upsert.
+_MIGRATE_MODES = {"append"}
 _RETRY_BACKOFFS = {"fixed", "exponential", "linear"}
 _SINK_FILE_FORMATS = {"csv", "json", "sql"}
 
@@ -194,6 +199,13 @@ def _validate_sink_db(name: str, config: dict[str, Any], result: ValidationResul
         result.add_error(name, "table", "Sink DB requires a 'table'")
     if not config.get("conn_id") and not config.get("uri"):
         result.add_error(name, "conn_id", "Sink DB requires 'conn_id' or 'uri'")
+    _validate_enum(name, config, "mode", _SINK_DB_MODES, result)
+    if config.get("mode") == "upsert" and not config.get("key_columns"):
+        result.add_error(
+            name, "key_columns",
+            "Sink DB mode='upsert' requires 'key_columns' -- the column(s) a "
+            "row collides on, e.g. key_columns=['id']",
+        )
 
 
 def _validate_sink_file(name: str, config: dict[str, Any], result: ValidationResult) -> None:
@@ -232,12 +244,23 @@ def _validate_notify(name: str, config: dict[str, Any], result: ValidationResult
 
 
 def _validate_migrate(name: str, config: dict[str, Any], result: ValidationResult) -> None:
-    has_uris = config.get("source_uri") and config.get("target_uri")
-    has_conns = config.get("source_conn_id") and config.get("target_conn_id")
+    # Match the config keys the migrate factory actually emits: source_uri /
+    # dest_uri and source_conn_id / dest_conn_id. (The check previously looked
+    # for target_* keys that never exist, so it always failed.)
+    has_uris = config.get("source_uri") and config.get("dest_uri")
+    has_conns = config.get("source_conn_id") and config.get("dest_conn_id")
     if not has_uris and not has_conns:
         result.add_error(
             name, "conn",
             "Migrate node requires 'source_uri' + 'target_uri' or 'source_conn_id' + 'target_conn_id'",
+        )
+    # The backend migrate does a plain insert regardless of mode; only append
+    # is truthful. For overwrite/upsert, sink into the target with sink_db.
+    if config.get("mode") and config.get("mode") not in _MIGRATE_MODES:
+        result.add_error(
+            name, "mode",
+            f"Migrate does a plain copy and does not support mode="
+            f"{config.get('mode')!r}; use sink_db for overwrite/upsert",
         )
 
 
