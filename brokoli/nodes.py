@@ -24,7 +24,7 @@ from brokoli.sentinel import UNSET
 
 def _current_pipeline() -> Pipeline:
     """Return the active pipeline or raise ContextError."""
-    pipeline = Pipeline._current
+    pipeline = Pipeline.current()
     if pipeline is not None:
         return pipeline
     raise ContextError("node registration")
@@ -770,7 +770,7 @@ def parallel(*nodes: NodeRef) -> _MultiRef | NodeRef:
             b = transform("B", input=raw, rules=["FILTER x < 0"])
             parallel(a, b) >> sink_db("Load", table="results")
     """
-    pipeline = Pipeline._current
+    pipeline = Pipeline.current()
     refs = [n for n in nodes if isinstance(n, NodeRef)]
 
     owner = pipeline or (refs[0].pipeline if refs else None)

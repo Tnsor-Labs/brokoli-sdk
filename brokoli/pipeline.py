@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import contextvars
 import copy
 import sys
 from contextlib import contextmanager
@@ -1730,10 +1731,29 @@ def _coerce_hook(name: str, value: Any) -> "dict[str, Any] | None":
 _HOOK_NAMES: tuple[str, ...] = ("on_start", "on_success", "on_failure")
 
 
+# Authoring context: the pipeline currently being built inside a
+# `with Pipeline(...)` block. A ContextVar -- not a class/global attribute
+# -- so concurrent authoring in threads or asyncio tasks stays isolated
+# (each thread and each task sees its own value), and so nested `with`
+# blocks restore the *enclosing* pipeline on exit instead of clobbering
+# the context to None. brokoli-sdk#15 M2.
+_current_pipeline_var: "contextvars.ContextVar[Optional[Pipeline]]" = (
+    contextvars.ContextVar("brokoli_current_pipeline", default=None)
+)
+
+
 class Pipeline:
     """Pipeline definition -- use as a context manager."""
 
-    _current: Optional["Pipeline"] = None
+    @classmethod
+    def current(cls) -> "Optional[Pipeline]":
+        """The pipeline being authored in this thread/task, or ``None``.
+
+        Reads the async-/thread-safe authoring context. Prefer this over
+        any module-global: two threads or two asyncio tasks each building
+        a pipeline will not see each other's.
+        """
+        return _current_pipeline_var.get()
 
     @staticmethod
     def _generate_pipeline_id(name: str) -> str:
@@ -1814,11 +1834,16 @@ class Pipeline:
     # -- Context manager --------------------------------------------------
 
     def __enter__(self) -> "Pipeline":
-        Pipeline._current = self
+        # Save the token so __exit__ can restore whatever pipeline (if any)
+        # was being authored before this block -- nesting-safe, unlike
+        # setting a global to None on exit.
+        self._context_token = _current_pipeline_var.set(self)
         return self
 
     def __exit__(self, *args: object) -> None:
-        Pipeline._current = None
+        token = self.__dict__.pop("_context_token", None)
+        if token is not None:
+            _current_pipeline_var.reset(token)
 
     # -- DAG mutation ------------------------------------------------------
 

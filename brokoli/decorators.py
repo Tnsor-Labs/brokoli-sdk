@@ -417,7 +417,7 @@ def sensor(
 
 def _require_pipeline(decorator_name: str) -> Pipeline:
     """Return the current pipeline or raise a clear error."""
-    pipeline = Pipeline._current
+    pipeline = Pipeline.current()
     if pipeline is None:
         raise RuntimeError(f"{decorator_name} must be used inside a `with Pipeline(...):` block")
     return pipeline
