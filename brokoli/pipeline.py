@@ -745,7 +745,28 @@ def _package_task_source(
 # ---------------------------------------------------------------------------
 
 class NodeRef:
-    """Reference to a node in the pipeline DAG.  Supports ``>>`` for chaining."""
+    """An authoring-time reference to a node in the pipeline DAG.
+
+    A ``NodeRef`` (and its typed subclasses :class:`ScalarRef`,
+    :class:`ArtifactRef`, :class:`DatasetRef`, :class:`CollectionRef`) points
+    at **another node's output** — something the pipeline *produces* — and is
+    how you wire the graph: ``a >> b``, ``transform(input=a)``, ``a.map(...)``.
+    The subclass reflects the shape of that output (a scalar, an artifact, a
+    dataset, a dynamic collection).
+
+    These are **data references**, and are deliberately a different kind of
+    thing from the **resource references** in :mod:`brokoli.resources`
+    (:class:`~brokoli.resources.Connection`,
+    :class:`~brokoli.resources.Secret`, :class:`~brokoli.resources.Variable`,
+    :class:`~brokoli.resources.Param`), which name something the *server*
+    resolves at run time — a connection the operator configured, a secret, a
+    run parameter. A data ref names a value *inside* the DAG; a resource ref
+    names a value the DAG *depends on*. The two never interchange: you cannot
+    pass a ``DatasetRef`` where a ``conn_id`` is expected, or a ``Connection``
+    as a node input.
+
+    Supports ``>>`` for chaining.
+    """
 
     def __init__(self, node_id: str, pipeline: "Pipeline") -> None:
         self.node_id = node_id
