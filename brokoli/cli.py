@@ -315,6 +315,36 @@ def _get_json(url: str, auth_header: str, operation: str = "diff") -> Any:
         raise DeployError(operation, 0, f"Malformed JSON response from {url}: {exc}") from exc
 
 
+def _post_json(
+    url: str,
+    auth_header: str,
+    body: dict[str, Any] | None,
+    operation: str,
+) -> Any:
+    """POST a JSON body and decode the response as an operational request.
+
+    Mirrors :func:`_get_json`'s error handling. An empty response body
+    decodes to ``{}`` (some endpoints return 202/204 with no content).
+    """
+    data = json.dumps(body or {}).encode()
+    request = urllib.request.Request(
+        url, data=data, method="POST",
+        headers=_make_headers(auth_header, "application/json"),
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT)
+        raw = response.read()
+        return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise DeployError(operation, exc.code, detail) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        reason = getattr(exc, "reason", str(exc))
+        raise DeployError(operation, 0, f"Could not reach server: {reason}") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise DeployError(operation, 0, f"Malformed JSON response from {url}: {exc}") from exc
+
+
 def _list_remote_pipelines(
     server: str,
     auth_header: str,
@@ -587,6 +617,112 @@ def export(args: argparse.Namespace) -> None:
             print(output)
 
 
+def _parse_params(pairs: list[str] | None, operation: str) -> dict[str, str]:
+    """Turn ``--param KEY=VALUE`` repeats into a params dict."""
+    params: dict[str, str] = {}
+    for pair in pairs or []:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            raise DeployError(
+                operation, 0, f"--param must be KEY=VALUE, got {pair!r}"
+            )
+        params[key] = value
+    return params
+
+
+def _resolve_pipeline_id(
+    server: str, auth_header: str, identifier: str, operation: str,
+) -> str:
+    """Resolve a user-supplied pipeline identifier to the server's internal id.
+
+    The run/backfill endpoints key on the server's internal id, but users
+    know the ``pipeline_id`` they set in code (or the pipeline name). Accept
+    any of the three -- internal id, logical ``pipeline_id``, or name -- and
+    return the internal id.
+    """
+    remote = _list_remote_pipelines(server, auth_header, operation)
+    for item in remote:  # an exact internal-id match is unambiguous
+        if item.get("id") == identifier:
+            return identifier
+    matches = [i for i in remote if i.get("pipeline_id") == identifier] or [
+        i for i in remote if i.get("name") == identifier
+    ]
+    if not matches:
+        raise DeployError(
+            operation, 0,
+            f"No pipeline matching {identifier!r} on {server}",
+        )
+    if len({i.get("id") for i in matches}) > 1:
+        raise DeployError(
+            operation, 0,
+            f"{identifier!r} matches multiple pipelines; use the pipeline id",
+        )
+    return matches[0]["id"]
+
+
+def run_cmd(args: argparse.Namespace) -> int:
+    """Trigger a run of a deployed pipeline.
+
+    The server runs pipelines asynchronously: this returns as soon as the
+    run is accepted, printing the run id to observe with ``brokoli status``.
+    Accepts the pipeline's logical id, name, or internal id.
+    """
+    auth_header = _auth_header_from_args(args)
+    params = _parse_params(getattr(args, "param", None), "run")
+    pipeline_id = _resolve_pipeline_id(
+        args.server, auth_header, args.pipeline, "run"
+    )
+    result = _post_json(
+        f"{args.server}/api/pipelines/{pipeline_id}/run",
+        auth_header,
+        {"params": params} if params else {},
+        operation="run",
+    )
+    run_id = result.get("id", "")
+    status = result.get("status", "accepted")
+    print(f"Triggered run {run_id} ({status}) for pipeline {args.pipeline}")
+    if run_id:
+        print(f"  Observe: brokoli status {run_id} --server {args.server}")
+    return 0
+
+
+def _fmt_run(run: dict[str, Any]) -> str:
+    """Render a run object as a compact, human-readable status block."""
+    lines = [
+        f"Run     {run.get('id', '?')}",
+        f"Pipeline {run.get('pipeline_id', '?')}",
+        f"Status  {run.get('status', '?')}",
+    ]
+    if run.get("started_at"):
+        lines.append(f"Started  {run['started_at']}")
+    if run.get("finished_at"):
+        lines.append(f"Finished {run['finished_at']}")
+    node_runs = run.get("node_runs") or []
+    if node_runs:
+        by_status: dict[str, int] = {}
+        for nr in node_runs:
+            by_status[nr.get("status", "?")] = by_status.get(nr.get("status", "?"), 0) + 1
+        summary = ", ".join(f"{n} {s}" for s, n in sorted(by_status.items()))
+        lines.append(f"Nodes   {len(node_runs)} ({summary})")
+    if run.get("error"):
+        lines.append(f"Error   {run['error']}")
+    return "\n".join(lines)
+
+
+def status_cmd(args: argparse.Namespace) -> int:
+    """Show the status of a run by id."""
+    auth_header = _auth_header_from_args(args)
+    run = _get_json(
+        f"{args.server}/api/runs/{args.run}",
+        auth_header,
+        operation="status",
+    )
+    if not isinstance(run, dict):
+        raise DeployError("status", 0, "Malformed run response: expected an object")
+    print(_fmt_run(run))
+    return 0
+
+
 def main() -> None:
     """CLI entry point. This is the only place that catches exceptions and exits."""
     parser = argparse.ArgumentParser(prog="brokoli", description="Brokoli Python SDK CLI")
@@ -640,6 +776,24 @@ def main() -> None:
     df.add_argument("--server", required=True, help="Brokoli server URL")
     df.add_argument("--api-key", default="", help="API key for authentication")
     df.set_defaults(func=diff_cmd)
+
+    # run (trigger a deployed pipeline)
+    rp = sub.add_parser("run", help="Trigger a run of a deployed pipeline")
+    rp.add_argument("pipeline", help="Pipeline id to run")
+    rp.add_argument("--server", required=True, help="Brokoli server URL")
+    rp.add_argument("--api-key", default="", help="API key for authentication")
+    rp.add_argument(
+        "--param", action="append", metavar="KEY=VALUE",
+        help="Runtime parameter override (repeatable)",
+    )
+    rp.set_defaults(func=run_cmd)
+
+    # status (of a run)
+    sp = sub.add_parser("status", help="Show the status of a run")
+    sp.add_argument("run", help="Run id")
+    sp.add_argument("--server", required=True, help="Brokoli server URL")
+    sp.add_argument("--api-key", default="", help="API key for authentication")
+    sp.set_defaults(func=status_cmd)
 
     # export
     ep = sub.add_parser("export", help="Export pipeline as YAML (default) or JSON")

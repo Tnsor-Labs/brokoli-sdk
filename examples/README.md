@@ -48,6 +48,22 @@ Every public building block, and where to see it run:
 | Pagination (`numbered_pages`, `offset_pages`, `cursor_pages`, `next_link_pages`, `link_header_pages`) | 06 |
 | `>>` chaining / DAG assembly | all |
 
+## Operating deployed pipelines
+
+Once a pipeline is deployed, trigger and observe runs from the CLI —
+no need to leave the terminal for the console:
+
+```bash
+brokoli run orders --server https://your-server            # trigger (async)
+brokoli run orders --server ... --param date=2026-08-11    # with parameters
+brokoli status <run-id> --server https://your-server       # check a run
+```
+
+`run` accepts the pipeline's logical id, its name, or the server's
+internal id. Auth via `--api-key` or the `BROKOLI_TOKEN` env var. (More
+operational commands — logs, cancel, retry, backfill — are landing under
+sdk#15 M3.)
+
 ## Authoring vs. run-time side effects
 
 `compile`, `validate`, and `deploy` **import your file** to discover its
