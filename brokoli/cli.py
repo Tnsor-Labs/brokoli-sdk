@@ -723,6 +723,87 @@ def status_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def logs_cmd(args: argparse.Namespace) -> int:
+    """Print a run's logs, optionally filtered by level or node."""
+    auth_header = _auth_header_from_args(args)
+    query: dict[str, str] = {}
+    if getattr(args, "level", None):
+        query["level"] = args.level
+    if getattr(args, "node", None):
+        query["node_id"] = args.node
+    url = f"{args.server}/api/runs/{args.run}/logs"
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    entries = _get_json(url, auth_header, operation="logs")
+    if not isinstance(entries, list):
+        raise DeployError("logs", 0, "Malformed logs response: expected a list")
+    if not entries:
+        print("(no logs)")
+        return 0
+    for entry in entries:
+        ts = entry.get("timestamp", "")
+        level = str(entry.get("level", "")).upper()
+        node = entry.get("node_id", "")
+        node_part = f" {node}" if node else ""
+        print(f"{ts} {level:<7}{node_part}: {entry.get('message', '')}")
+    return 0
+
+
+def cancel_cmd(args: argparse.Namespace) -> int:
+    """Cancel an in-progress run."""
+    auth_header = _auth_header_from_args(args)
+    result = _post_json(
+        f"{args.server}/api/runs/{args.run}/cancel",
+        auth_header, {}, operation="cancel",
+    )
+    print(f"Run {args.run}: {result.get('status', 'cancelled')}")
+    return 0
+
+
+def retry_cmd(args: argparse.Namespace) -> int:
+    """Retry a run by resuming it from where it stopped.
+
+    Maps to the server's resume operation: successful nodes are preserved
+    and execution continues from the failure, rather than starting over.
+    """
+    auth_header = _auth_header_from_args(args)
+    run = _post_json(
+        f"{args.server}/api/runs/{args.run}/resume",
+        auth_header, {}, operation="retry",
+    )
+    if isinstance(run, dict) and run.get("id"):
+        print(f"Resumed run {args.run}:")
+        print(_fmt_run(run))
+    else:
+        print(f"Resumed run {args.run}")
+    return 0
+
+
+def backfill_cmd(args: argparse.Namespace) -> int:
+    """Backfill a pipeline over a date range (a server-side operation)."""
+    auth_header = _auth_header_from_args(args)
+    pipeline_id = _resolve_pipeline_id(
+        args.server, auth_header, args.pipeline, "backfill"
+    )
+    result = _post_json(
+        f"{args.server}/api/pipelines/{pipeline_id}/backfill",
+        auth_header,
+        {"start_date": args.start, "end_date": args.end},
+        operation="backfill",
+    )
+    runs = result.get("runs") or []
+    count = result.get("count", len(runs))
+    if result.get("error"):
+        print(f"Backfill incomplete: {result['error']}")
+    print(
+        f"Backfill {args.pipeline} {args.start}..{args.end}: "
+        f"{count} run(s) triggered"
+    )
+    for run_id in runs:
+        print(f"  {run_id}")
+    return 0
+
+
 def main() -> None:
     """CLI entry point. This is the only place that catches exceptions and exits."""
     parser = argparse.ArgumentParser(prog="brokoli", description="Brokoli Python SDK CLI")
@@ -794,6 +875,41 @@ def main() -> None:
     sp.add_argument("--server", required=True, help="Brokoli server URL")
     sp.add_argument("--api-key", default="", help="API key for authentication")
     sp.set_defaults(func=status_cmd)
+
+    # logs (of a run)
+    lp = sub.add_parser("logs", help="Print a run's logs")
+    lp.add_argument("run", help="Run id")
+    lp.add_argument("--server", required=True, help="Brokoli server URL")
+    lp.add_argument("--api-key", default="", help="API key for authentication")
+    lp.add_argument(
+        "--level", choices=["debug", "info", "warning", "error"],
+        help="Only show logs at this level",
+    )
+    lp.add_argument("--node", metavar="NODE_ID", help="Only show logs from this node")
+    lp.set_defaults(func=logs_cmd)
+
+    # cancel (a run)
+    cn = sub.add_parser("cancel", help="Cancel an in-progress run")
+    cn.add_argument("run", help="Run id")
+    cn.add_argument("--server", required=True, help="Brokoli server URL")
+    cn.add_argument("--api-key", default="", help="API key for authentication")
+    cn.set_defaults(func=cancel_cmd)
+
+    # retry (resume a run)
+    rt = sub.add_parser("retry", help="Retry a run, resuming from where it stopped")
+    rt.add_argument("run", help="Run id")
+    rt.add_argument("--server", required=True, help="Brokoli server URL")
+    rt.add_argument("--api-key", default="", help="API key for authentication")
+    rt.set_defaults(func=retry_cmd)
+
+    # backfill (a pipeline over a date range)
+    bf = sub.add_parser("backfill", help="Backfill a pipeline over a date range")
+    bf.add_argument("pipeline", help="Pipeline id, name, or logical id")
+    bf.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="Start date")
+    bf.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="End date")
+    bf.add_argument("--server", required=True, help="Brokoli server URL")
+    bf.add_argument("--api-key", default="", help="API key for authentication")
+    bf.set_defaults(func=backfill_cmd)
 
     # export
     ep = sub.add_parser("export", help="Export pipeline as YAML (default) or JSON")
