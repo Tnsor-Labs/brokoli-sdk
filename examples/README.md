@@ -74,6 +74,26 @@ an update, so a redeploy that changed nothing is visible as an unchanged
 digest. `brokoli compile <file> --digest` prints the same digest without a
 server, for CI to capture and diff across builds.
 
+### Named environments
+
+Define environments once in a `brokoli.yaml` (or point `BROKOLI_CONFIG` at
+one) and target them with `--env`, instead of repeating `--server`/`--api-key`:
+
+```yaml
+environments:
+  dev:  { server: http://localhost:8080 }
+  prod: { server: https://prod.example.com, token_env: BROKOLI_PROD_TOKEN }
+```
+
+```bash
+brokoli deploy pipe.py --env prod        # server + token from the config
+brokoli run orders --env prod            # any server command takes --env
+```
+
+The token is read from the env var named by `token_env` (never stored in
+the file). An explicit `--server`/`BROKOLI_TOKEN` always overrides the
+environment.
+
 ## Authoring vs. run-time side effects
 
 `compile`, `validate`, and `deploy` **import your file** to discover its
