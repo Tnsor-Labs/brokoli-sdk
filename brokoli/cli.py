@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from brokoli.compatibility import preflight_server_compatibility
 from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir
@@ -37,6 +39,78 @@ def _auth_header_from_args(args: argparse.Namespace) -> str:
     if getattr(args, "api_key", ""):
         return f"Bearer {args.api_key}"
     return ""
+
+
+# Named deployment environments (brokoli-sdk#15 M3). A project config file
+# maps environment names to a server URL and, optionally, the env var
+# holding that environment's token:
+#
+#     environments:
+#       dev:  { server: http://localhost:8080 }
+#       prod: { server: https://prod.example, token_env: BROKOLI_PROD_TOKEN }
+#
+# so `brokoli deploy pipe.py --env prod` targets prod without repeating the
+# URL or embedding a secret in the file. The file is `brokoli.yaml` in the
+# working directory, or the path in BROKOLI_CONFIG.
+def _config_path() -> "str | None":
+    override = os.getenv("BROKOLI_CONFIG")
+    if override:
+        return override
+    return "brokoli.yaml" if os.path.exists("brokoli.yaml") else None
+
+
+def _load_environments() -> dict[str, dict]:
+    """Read the ``environments`` mapping from the project config, or {}."""
+    path = _config_path()
+    if not path:
+        return {}
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise DeployError("config", 0, f"could not read {path}: {exc}") from exc
+    envs = data.get("environments") or {}
+    if not isinstance(envs, dict):
+        raise DeployError("config", 0, f"{path}: 'environments' must be a mapping")
+    return envs
+
+
+def _resolve_target(
+    args: argparse.Namespace, operation: str, default_server: "str | None" = None
+) -> "tuple[str, str]":
+    """Resolve (server, auth_header) from --server/--api-key and/or --env.
+
+    Precedence: an explicit ``--server`` always wins; otherwise ``--env``'s
+    configured server is used; otherwise ``default_server``. Auth likewise
+    prefers an explicit token (BROKOLI_TOKEN / --api-key) and falls back to
+    the environment's ``token_env``.
+    """
+    server = getattr(args, "server", None)
+    env_cfg: dict = {}
+    env_name = getattr(args, "env", None)
+    if env_name:
+        envs = _load_environments()
+        if env_name not in envs:
+            known = ", ".join(sorted(envs)) or "none configured"
+            raise DeployError(
+                operation, 0, f"unknown environment {env_name!r} (have: {known})"
+            )
+        env_cfg = envs[env_name] or {}
+        if server is None:
+            env_server = env_cfg.get("server")
+            server = env_server if isinstance(env_server, str) else None
+    if server is None:
+        server = default_server
+    if not server:
+        raise DeployError(
+            operation, 0, "no server: pass --server or --env <name>"
+        )
+    auth = _auth_header_from_args(args)
+    if not auth and env_cfg.get("token_env"):
+        token = os.getenv(str(env_cfg["token_env"]), "")
+        if token:
+            auth = f"Bearer {token}"
+    return server.rstrip("/"), auth
 
 
 def _make_headers(auth_header: str, content_type: str | None = None) -> dict[str, str]:
@@ -176,8 +250,9 @@ def deploy(args: argparse.Namespace) -> None:
     """Deploy pipeline(s) to a Brokoli server."""
     from brokoli.validation import validate_pipeline
 
-    server = args.server.rstrip("/")
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(
+        args, "deploy", default_server="http://localhost:8080"
+    )
     skip_validation: bool = getattr(args, "skip_validation", False)
     allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
     pipelines: list[Any] = []
@@ -226,8 +301,9 @@ def validate_cmd(args: argparse.Namespace) -> None:
     """Validate pipeline(s) without deploying."""
     from brokoli.validation import validate_pipeline
 
-    server = args.server.rstrip("/")
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(
+        args, "validate", default_server="http://localhost:8080"
+    )
     allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
     pipelines: list[Any] = []
 
@@ -580,8 +656,7 @@ def _validate_pipeline_detail(detail: Any, pipeline_name: str) -> dict[str, Any]
 
 def diff_cmd(args: argparse.Namespace) -> int:
     """Compare local normalized pipeline IR with full server definitions."""
-    server = args.server.rstrip("/")
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "diff")
     pipelines: list[Any] = []
     for f in _collect_files(args.file):
         pipelines.extend(load_pipeline_from_file(str(f)))
@@ -678,13 +753,11 @@ def run_cmd(args: argparse.Namespace) -> int:
     run is accepted, printing the run id to observe with ``brokoli status``.
     Accepts the pipeline's logical id, name, or internal id.
     """
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "run")
     params = _parse_params(getattr(args, "param", None), "run")
-    pipeline_id = _resolve_pipeline_id(
-        args.server, auth_header, args.pipeline, "run"
-    )
+    pipeline_id = _resolve_pipeline_id(server, auth_header, args.pipeline, "run")
     result = _post_json(
-        f"{args.server}/api/pipelines/{pipeline_id}/run",
+        f"{server}/api/pipelines/{pipeline_id}/run",
         auth_header,
         {"params": params} if params else {},
         operation="run",
@@ -693,7 +766,7 @@ def run_cmd(args: argparse.Namespace) -> int:
     status = result.get("status", "accepted")
     print(f"Triggered run {run_id} ({status}) for pipeline {args.pipeline}")
     if run_id:
-        print(f"  Observe: brokoli status {run_id} --server {args.server}")
+        print(f"  Observe: brokoli status {run_id} --server {server}")
     return 0
 
 
@@ -722,9 +795,9 @@ def _fmt_run(run: dict[str, Any]) -> str:
 
 def status_cmd(args: argparse.Namespace) -> int:
     """Show the status of a run by id."""
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "status")
     run = _get_json(
-        f"{args.server}/api/runs/{args.run}",
+        f"{server}/api/runs/{args.run}",
         auth_header,
         operation="status",
     )
@@ -736,13 +809,13 @@ def status_cmd(args: argparse.Namespace) -> int:
 
 def logs_cmd(args: argparse.Namespace) -> int:
     """Print a run's logs, optionally filtered by level or node."""
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "logs")
     query: dict[str, str] = {}
     if getattr(args, "level", None):
         query["level"] = args.level
     if getattr(args, "node", None):
         query["node_id"] = args.node
-    url = f"{args.server}/api/runs/{args.run}/logs"
+    url = f"{server}/api/runs/{args.run}/logs"
     if query:
         url += "?" + urllib.parse.urlencode(query)
     entries = _get_json(url, auth_header, operation="logs")
@@ -762,9 +835,9 @@ def logs_cmd(args: argparse.Namespace) -> int:
 
 def cancel_cmd(args: argparse.Namespace) -> int:
     """Cancel an in-progress run."""
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "cancel")
     result = _post_json(
-        f"{args.server}/api/runs/{args.run}/cancel",
+        f"{server}/api/runs/{args.run}/cancel",
         auth_header, {}, operation="cancel",
     )
     print(f"Run {args.run}: {result.get('status', 'cancelled')}")
@@ -777,9 +850,9 @@ def retry_cmd(args: argparse.Namespace) -> int:
     Maps to the server's resume operation: successful nodes are preserved
     and execution continues from the failure, rather than starting over.
     """
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "retry")
     run = _post_json(
-        f"{args.server}/api/runs/{args.run}/resume",
+        f"{server}/api/runs/{args.run}/resume",
         auth_header, {}, operation="retry",
     )
     if isinstance(run, dict) and run.get("id"):
@@ -792,12 +865,12 @@ def retry_cmd(args: argparse.Namespace) -> int:
 
 def backfill_cmd(args: argparse.Namespace) -> int:
     """Backfill a pipeline over a date range (a server-side operation)."""
-    auth_header = _auth_header_from_args(args)
+    server, auth_header = _resolve_target(args, "backfill")
     pipeline_id = _resolve_pipeline_id(
-        args.server, auth_header, args.pipeline, "backfill"
+        server, auth_header, args.pipeline, "backfill"
     )
     result = _post_json(
-        f"{args.server}/api/pipelines/{pipeline_id}/backfill",
+        f"{server}/api/pipelines/{pipeline_id}/backfill",
         auth_header,
         {"start_date": args.start, "end_date": args.end},
         operation="backfill",
@@ -823,8 +896,9 @@ def main() -> None:
     # deploy
     dp = sub.add_parser("deploy", help="Deploy pipeline(s) to a Brokoli server")
     dp.add_argument("file", help="Python file or directory containing pipelines")
-    dp.add_argument("--server", default="http://localhost:8080", help="Brokoli server URL")
+    dp.add_argument("--server", default=None, help="Brokoli server URL")
     dp.add_argument("--api-key", default="", help="API key for authentication")
+    dp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     dp.add_argument("--skip-validation", action="store_true", help="Skip pre-deploy validation")
     dp.add_argument(
         "--allow-legacy-server",
@@ -836,8 +910,9 @@ def main() -> None:
     # validate (without deploying)
     vp = sub.add_parser("validate", help="Validate pipeline(s) without deploying")
     vp.add_argument("file", help="Python file or directory")
-    vp.add_argument("--server", default="http://localhost:8080", help="Brokoli server URL (for conn_id checks)")
+    vp.add_argument("--server", default=None, help="Brokoli server URL (for conn_id checks)")
     vp.add_argument("--api-key", default="", help="API key")
+    vp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     vp.add_argument(
         "--allow-legacy-server",
         action="store_true",
@@ -870,15 +945,17 @@ def main() -> None:
     # diff
     df = sub.add_parser("diff", help="Compare local IR with server pipeline definitions")
     df.add_argument("file", help="Python file or directory containing pipelines")
-    df.add_argument("--server", required=True, help="Brokoli server URL")
+    df.add_argument("--server", default=None, help="Brokoli server URL")
     df.add_argument("--api-key", default="", help="API key for authentication")
+    df.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     df.set_defaults(func=diff_cmd)
 
     # run (trigger a deployed pipeline)
     rp = sub.add_parser("run", help="Trigger a run of a deployed pipeline")
     rp.add_argument("pipeline", help="Pipeline id to run")
-    rp.add_argument("--server", required=True, help="Brokoli server URL")
+    rp.add_argument("--server", default=None, help="Brokoli server URL")
     rp.add_argument("--api-key", default="", help="API key for authentication")
+    rp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     rp.add_argument(
         "--param", action="append", metavar="KEY=VALUE",
         help="Runtime parameter override (repeatable)",
@@ -888,15 +965,17 @@ def main() -> None:
     # status (of a run)
     sp = sub.add_parser("status", help="Show the status of a run")
     sp.add_argument("run", help="Run id")
-    sp.add_argument("--server", required=True, help="Brokoli server URL")
+    sp.add_argument("--server", default=None, help="Brokoli server URL")
     sp.add_argument("--api-key", default="", help="API key for authentication")
+    sp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     sp.set_defaults(func=status_cmd)
 
     # logs (of a run)
     lp = sub.add_parser("logs", help="Print a run's logs")
     lp.add_argument("run", help="Run id")
-    lp.add_argument("--server", required=True, help="Brokoli server URL")
+    lp.add_argument("--server", default=None, help="Brokoli server URL")
     lp.add_argument("--api-key", default="", help="API key for authentication")
+    lp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     lp.add_argument(
         "--level", choices=["debug", "info", "warning", "error"],
         help="Only show logs at this level",
@@ -907,15 +986,17 @@ def main() -> None:
     # cancel (a run)
     cn = sub.add_parser("cancel", help="Cancel an in-progress run")
     cn.add_argument("run", help="Run id")
-    cn.add_argument("--server", required=True, help="Brokoli server URL")
+    cn.add_argument("--server", default=None, help="Brokoli server URL")
     cn.add_argument("--api-key", default="", help="API key for authentication")
+    cn.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     cn.set_defaults(func=cancel_cmd)
 
     # retry (resume a run)
     rt = sub.add_parser("retry", help="Retry a run, resuming from where it stopped")
     rt.add_argument("run", help="Run id")
-    rt.add_argument("--server", required=True, help="Brokoli server URL")
+    rt.add_argument("--server", default=None, help="Brokoli server URL")
     rt.add_argument("--api-key", default="", help="API key for authentication")
+    rt.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     rt.set_defaults(func=retry_cmd)
 
     # backfill (a pipeline over a date range)
@@ -923,8 +1004,9 @@ def main() -> None:
     bf.add_argument("pipeline", help="Pipeline id, name, or logical id")
     bf.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="Start date")
     bf.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="End date")
-    bf.add_argument("--server", required=True, help="Brokoli server URL")
+    bf.add_argument("--server", default=None, help="Brokoli server URL")
     bf.add_argument("--api-key", default="", help="API key for authentication")
+    bf.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     bf.set_defaults(func=backfill_cmd)
 
     # export
