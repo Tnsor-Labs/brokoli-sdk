@@ -33,9 +33,32 @@ Issues = "https://github.com/Tnsor-Labs/brokoli-sdk/issues"
 brokoli = "brokoli.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "jsonschema>=4.0", "ruff>=0.6", "mypy>=1.8", "build>=1.0"]
 pandas = ["pandas>=1.5"]
 pyarrow = ["pyarrow>=12.0"]
 
 [tool.setuptools.packages.find]
 include = ["brokoli*"]
+
+# Ship the PEP 561 typing marker so `import brokoli` is type-checked by
+# consumers (brokoli-sdk#15 M5). Without this the wheel omits py.typed
+# and downstream type checkers treat the package as untyped.
+[tool.setuptools.package-data]
+brokoli = ["py.typed"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+# Conservative starting set: pyflakes (F) + a subset of pycodestyle (E)
+# that won't fight the existing style. Expand as the codebase is cleaned.
+select = ["F", "E9"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+# Lenient to start: the SDK ships py.typed for consumers now; tightening
+# its own internal type-checking is incremental (see the advisory CI job).
+check_untyped_defs = false
+warn_unused_ignores = false
