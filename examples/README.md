@@ -48,6 +48,24 @@ Every public building block, and where to see it run:
 | Pagination (`numbered_pages`, `offset_pages`, `cursor_pages`, `next_link_pages`, `link_header_pages`) | 06 |
 | `>>` chaining / DAG assembly | all |
 
+## Authoring vs. run-time side effects
+
+`compile`, `validate`, and `deploy` **import your file** to discover its
+pipelines, so the `with Pipeline(...)` block runs. Two rules keep that
+import free of run-time side effects:
+
+- Your file is imported under its own module name, never `__main__` — so
+  put any deploy/run code under `if __name__ == "__main__":` and it won't
+  fire during discovery.
+- `BROKOLI_DISCOVERY` is set in the environment during discovery. Guard
+  expensive run-time-only setup on it:
+
+  ```python
+  import os
+  if not os.getenv("BROKOLI_DISCOVERY"):
+      client = connect_to_warehouse()   # skipped during compile/deploy
+  ```
+
 ## Local testing (no server)
 
 `brokoli.testing` lets you assert graph shape and task logic without

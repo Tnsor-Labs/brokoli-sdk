@@ -60,6 +60,21 @@ def _pipeline_module_name(filepath: str) -> str:
     return name
 
 
+# Set in the environment while a pipeline file is imported for discovery
+# (compile/validate/deploy), and cleared afterward. Module-level code that
+# only makes sense at run time -- opening a DB connection, building an API
+# client, reading a large local file -- can guard on it to keep discovery
+# free of those side effects:
+#
+#     import os
+#     if not os.getenv("BROKOLI_DISCOVERY"):
+#         client = connect_to_warehouse()   # skipped during compile/deploy
+#
+# It's an environment variable, not an import, so a file needs nothing from
+# brokoli to check it. brokoli-sdk#15 M2.
+DISCOVERY_ENV_VAR = "BROKOLI_DISCOVERY"
+
+
 def load_pipeline_from_file(filepath: str) -> list[Any]:
     """Import a Python file and extract all Pipeline objects.
 
@@ -85,11 +100,21 @@ def load_pipeline_from_file(filepath: str) -> list[Any]:
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
+    # Mark this import as discovery so the file can skip run-time-only side
+    # effects (see DISCOVERY_ENV_VAR). Restored afterward so discovery
+    # leaves the process environment exactly as it found it.
+    prior_discovery = os.environ.get(DISCOVERY_ENV_VAR)
+    os.environ[DISCOVERY_ENV_VAR] = "1"
     try:
         spec.loader.exec_module(module)
     except BaseException:
         del sys.modules[module_name]
         raise
+    finally:
+        if prior_discovery is None:
+            os.environ.pop(DISCOVERY_ENV_VAR, None)
+        else:
+            os.environ[DISCOVERY_ENV_VAR] = prior_discovery
 
     pipelines = [obj for obj in vars(module).values() if isinstance(obj, Pipeline)]
     if not pipelines:
