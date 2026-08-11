@@ -17,7 +17,7 @@ from typing import Any
 
 from brokoli.compatibility import preflight_server_compatibility
 from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
-from brokoli.ir import canonical_json, diff_ir, normalize_ir
+from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir
 
 REQUEST_TIMEOUT = 10
 
@@ -163,6 +163,9 @@ def _upsert_pipeline(
     result = json.loads(resp.read())
     print(f"  {verb}: {pipeline.name} ({result['id'][:8]})")
     print(f"    {len(payload['nodes'])} nodes, {len(payload['edges'])} edges")
+    # Auditable record of exactly what was deployed: a content digest of the
+    # normalized IR, stable across create/update and cosmetic churn.
+    print(f"    IR digest: {ir_digest(payload)}")
     if not match and pipeline.schedule:
         print(f"    Schedule: {pipeline.schedule}")
     if not match and pipeline.sla_deadline:
@@ -287,6 +290,14 @@ def compile_cmd(args: argparse.Namespace) -> int:
             return 0
         print("Pipeline check failed")
         return 1
+
+    if getattr(args, "digest", False):
+        # One "<digest>  <name>" line per pipeline — a stable content hash
+        # a CI job can capture and compare across builds to tell whether a
+        # pipeline's compiled IR actually changed.
+        for pipeline in pipelines:
+            print(f"{ir_digest(pipeline.to_json())}  {pipeline.name}")
+        return 0
 
     if getattr(args, "normalized", False):
         snapshots = [pipeline.to_normalized_json() for pipeline in pipelines]
@@ -848,6 +859,11 @@ def main() -> None:
         "--check",
         action="store_true",
         help="Validate and normalize locally without emitting IR",
+    )
+    compile_mode.add_argument(
+        "--digest",
+        action="store_true",
+        help="Print a stable sha256 IR digest per pipeline (for audit/CI)",
     )
     cp.set_defaults(func=compile_cmd)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -102,6 +103,24 @@ def canonical_json(value: Any) -> str:
 def render_ir(ir: Mapping[str, Any]) -> str:
     """Normalize and canonically render pipeline IR."""
     return canonical_json(normalize_ir(ir))
+
+
+def ir_digest(ir: Mapping[str, Any]) -> str:
+    """A stable content digest of pipeline IR, as ``sha256:<hex>``.
+
+    Hashes the canonical, normalized IR (:func:`render_ir`), so the digest
+    identifies exactly what would be deployed while ignoring cosmetic churn
+    (key order, layout positions, server-only fields). Two consequences make
+    it an audit primitive:
+
+    * a create and a later update of the same content produce the *same*
+      digest -- ``normalize_ir`` strips ``id``/timestamps -- so a redeploy
+      that changes nothing is recognizable as a no-op;
+    * recording the digest of what was deployed lets you later verify a
+      running pipeline against the source it was built from.
+    """
+    canonical = render_ir(ir).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 def diff_ir(
