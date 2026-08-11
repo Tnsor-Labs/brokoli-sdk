@@ -27,7 +27,15 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["ResourceRef", "Connection"]
+__all__ = [
+    "ResourceRef",
+    "Connection",
+    "InterpolationRef",
+    "Secret",
+    "Variable",
+    "Param",
+    "EnvVar",
+]
 
 # Resource names are operator-chosen identifiers; keep them to the safe set
 # the server and connection UI already use, so an invalid name is caught at
@@ -89,3 +97,72 @@ class Connection(ResourceRef):
     """
 
     kind = "connection"
+
+
+class InterpolationRef(ResourceRef):
+    """A reference the server resolves via ``${namespace.name}`` interpolation.
+
+    The engine deep-resolves ``${...}`` in every node's config at run time
+    (``VariableContext.ResolveConfig``), so these refs compile to that token
+    and are substituted with a real value when the node runs. Unlike
+    :class:`Connection` (a bare-name field), an interpolation ref can be used
+    as a whole config value *or* embedded in a larger string -- ``str()``
+    yields the token, so it composes in f-strings::
+
+        source_api("Fetch", url=f"https://api/{Param('date')}/orders")
+        # url -> "https://api/${param.date}/orders"
+
+    Whichever way it's used, the value the node sees at run time is the
+    resolved substitution.
+    """
+
+    namespace = ""
+
+    def ir_value(self) -> str:
+        return "${" + self.namespace + "." + self.name + "}"
+
+    def __str__(self) -> str:  # embed in f-strings as the interpolation token
+        return self.ir_value()
+
+
+class Secret(InterpolationRef):
+    """A named secret, resolved server-side at run time (``${secret.name}``).
+
+    The server reads the secret from its environment (``BROKED_SECRET_<NAME>``)
+    -- the value never appears in the pipeline definition::
+
+        source_api("Fetch", url="https://api",
+                   headers={"Authorization": Secret("api_token")})
+        # header value -> "${secret.api_token}"
+    """
+
+    kind = "secret"
+    namespace = "secret"
+
+
+class Variable(InterpolationRef):
+    """A stored variable, resolved server-side at run time (``${var.name}``)."""
+
+    kind = "variable"
+    namespace = "var"
+
+
+class Param(InterpolationRef):
+    """A run parameter, resolved from the run's params (``${param.name}``).
+
+    These are the values supplied by ``brokoli run --param name=value`` (or a
+    schedule's defaults), so a pipeline can be parameterized per run::
+
+        source_db("Extract", query="SELECT * FROM t WHERE day = '${param.day}'")
+        # equivalently: f"... WHERE day = '{Param('day')}'"
+    """
+
+    kind = "param"
+    namespace = "param"
+
+
+class EnvVar(InterpolationRef):
+    """A server-side environment variable, resolved at run time (``${env.name}``)."""
+
+    kind = "env"
+    namespace = "env"

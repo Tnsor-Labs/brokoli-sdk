@@ -23,7 +23,9 @@ from brokoli.pagination import (
     offset_pages, cursor_pages, numbered_pages,
     next_link_pages, link_header_pages,
 )
-from brokoli.resources import Connection, ResourceRef
+from brokoli.resources import (
+    Connection, ResourceRef, InterpolationRef, Secret, Variable, Param, EnvVar,
+)
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_ir
 
 __version__ = "0.2.0"
@@ -34,8 +36,11 @@ __all__ = [
     # authoring-time DATA refs: they point at another node's output.
     "NodeRef", "ConditionRef", "ScalarRef", "ArtifactRef", "DatasetRef", "CollectionRef",
     # Typed RESOURCE refs (brokoli-sdk#15 M4) -- see brokoli.resources. These
-    # point at a server-side resource (a connection), distinct from data refs.
-    "Connection", "ResourceRef",
+    # point at server-side resources, distinct from the data refs above.
+    # Connection is a bare-name field; Secret/Variable/Param/EnvVar compile to
+    # the engine's ${...} interpolation, resolved in node configs at run time.
+    "Connection", "ResourceRef", "InterpolationRef",
+    "Secret", "Variable", "Param", "EnvVar",
     # Decorators
     "task", "condition", "source", "sink", "filter", "map", "validate", "sensor",
     # Built-in sources

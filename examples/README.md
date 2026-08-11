@@ -130,6 +130,21 @@ reference (something configured on the server), deliberately distinct from
 authoring-time *data* references like `DatasetRef` (a node's output in the
 DAG).
 
+`Secret`, `Variable`, `Param`, and `EnvVar` reference values the server
+resolves at run time — they compile to the engine's `${namespace.name}`
+interpolation and can be a whole value or embedded in a string:
+
+```python
+from brokoli import source_api, sink_file, Secret, Param
+
+source_api("Fetch", url=f"https://api/{Param('date')}/orders",
+           headers={"Authorization": Secret("api_token")})
+sink_file("Save", path=f"/data/{Param('day')}.json", format="json")
+```
+
+`Param` values come from `brokoli run --param name=value`; `Secret` reads
+from the server's environment so the value never lives in the definition.
+
 ## Local testing (no server)
 
 `brokoli.testing` lets you assert graph shape and task logic without
