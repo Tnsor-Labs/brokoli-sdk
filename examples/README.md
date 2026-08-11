@@ -48,6 +48,34 @@ Every public building block, and where to see it run:
 | Pagination (`numbered_pages`, `offset_pages`, `cursor_pages`, `next_link_pages`, `link_header_pages`) | 06 |
 | `>>` chaining / DAG assembly | all |
 
+## Local testing (no server)
+
+`brokoli.testing` lets you assert graph shape and task logic without
+deploying. It *inspects* a compiled pipeline and *calls* your task
+functions in isolation — it does not run the DAG (that's the engine's
+job).
+
+```python
+from brokoli.testing import graph, run_task, assert_stable_ir
+
+def test_shape():
+    g = graph(build_pipeline())
+    g.assert_nodes("Fetch", "Clean", "Load")
+    g.assert_edge("Fetch", "Clean")
+    assert g.kind("Fetch") == "source_api"
+
+def test_task_logic():
+    # @task/@map/... wrappers, or a plain function — call the real logic
+    assert run_task(my_clean_task, [{"raw": 1}]) == [{"value": 1}]
+
+def test_deterministic():
+    assert_stable_ir(build_pipeline)   # recompiling must not churn the IR
+```
+
+`graph()` exposes `node_names`, `edges`, `config()`, `kind()`,
+`upstream()`/`downstream()`, and `has_edge()`; `ir_snapshot()` returns a
+canonical IR string for golden-file regression tests.
+
 ## Python support
 
 The SDK supports **CPython 3.9 – 3.13** (tested on every minor version in CI).

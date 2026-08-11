@@ -52,6 +52,9 @@ jobs:
           python -m venv /tmp/wheeltest
           /tmp/wheeltest/bin/pip install dist/*.whl
           /tmp/wheeltest/bin/brokoli --help >/dev/null
+          # The test harness is a shipped public submodule — it must import
+          # from the installed wheel, not just from the source tree.
+          /tmp/wheeltest/bin/python -c "import brokoli.testing; print('brokoli.testing OK')"
 
   # Gate: every shipped example must compile-check against the current
   # SDK. Two real-world examples had silently rotted (they passed a kwarg
