@@ -175,11 +175,10 @@ def _validate_condition(name: str, config: dict[str, Any], result: ValidationRes
 # validator exists to catch.
 _JOIN_TYPES = {"inner", "left", "right", "full", "outer", "full_outer"}
 _NOTIFY_TYPES = {"slack", "webhook"}
-# sink_db generates the write SQL from the input rows (append/overwrite/upsert).
+# sink_db and migrate both generate the write SQL from the rows and honor
+# the same write modes.
 _SINK_DB_MODES = {"append", "overwrite", "upsert"}
-# migrate copies rows with a plain insert; the backend ignores anything else,
-# so only append is honest. Use sink_db for overwrite/upsert.
-_MIGRATE_MODES = {"append"}
+_MIGRATE_MODES = {"append", "overwrite", "upsert"}
 _RETRY_BACKOFFS = {"fixed", "exponential", "linear"}
 _SINK_FILE_FORMATS = {"csv", "json", "sql"}
 
@@ -254,13 +253,12 @@ def _validate_migrate(name: str, config: dict[str, Any], result: ValidationResul
             name, "conn",
             "Migrate node requires 'source_uri' + 'target_uri' or 'source_conn_id' + 'target_conn_id'",
         )
-    # The backend migrate does a plain insert regardless of mode; only append
-    # is truthful. For overwrite/upsert, sink into the target with sink_db.
-    if config.get("mode") and config.get("mode") not in _MIGRATE_MODES:
+    _validate_enum(name, config, "mode", _MIGRATE_MODES, result)
+    if config.get("mode") == "upsert" and not config.get("key_columns"):
         result.add_error(
-            name, "mode",
-            f"Migrate does a plain copy and does not support mode="
-            f"{config.get('mode')!r}; use sink_db for overwrite/upsert",
+            name, "key_columns",
+            "Migrate mode='upsert' requires 'key_columns' -- the column(s) a "
+            "row collides on, e.g. key_columns=['id']",
         )
 
 

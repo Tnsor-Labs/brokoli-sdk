@@ -263,19 +263,32 @@ class TestValidateSinkDBModes:
 
 
 class TestValidateMigrateMode:
-    """brokoli-sdk#12: migrate is a plain copy; non-append modes are refused."""
+    """brokoli-sdk#12 follow-up: migrate honors append/overwrite/upsert."""
 
-    def _pipe(self, mode):
+    def _pipe(self, mode, **kw):
         from brokoli import migrate
         with Pipeline("t", pipeline_id="t") as p:
             migrate("Mig", source_conn_id="a", target_conn_id="b",
-                    query="SELECT 1", table="t", mode=mode)
+                    query="SELECT 1", table="t", mode=mode, **kw)
         return p
 
-    def test_append_valid(self):
-        assert validate_pipeline(self._pipe("append")).valid
+    def test_append_and_overwrite_valid(self):
+        for mode in ("append", "overwrite"):
+            assert validate_pipeline(self._pipe(mode)).valid, mode
 
-    def test_upsert_rejected_points_to_sink_db(self):
+    def test_upsert_requires_key_columns(self):
         vr = validate_pipeline(self._pipe("upsert"))
         assert not vr.valid
-        assert any("sink_db" in e.message for e in vr.errors)
+        assert any("key_columns" in e.message for e in vr.errors)
+
+    def test_upsert_with_key_columns_valid_and_emitted(self):
+        p = self._pipe("upsert", key_columns=["id"])
+        assert validate_pipeline(p).valid
+        cfg = [n for n in p.to_json()["nodes"] if n["name"] == "Mig"][0]["config"]
+        assert cfg["mode"] == "upsert"
+        assert cfg["key_columns"] == ["id"]
+
+    def test_unknown_mode_rejected(self):
+        vr = validate_pipeline(self._pipe("merge"))
+        assert not vr.valid
+        assert any("mode" in e.message.lower() for e in vr.errors)
