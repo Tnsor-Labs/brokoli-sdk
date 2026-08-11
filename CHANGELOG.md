@@ -1,0 +1,74 @@
+# Changelog
+
+All notable changes to the Brokoli Python SDK are documented here. The
+format is loosely [Keep a Changelog](https://keepachangelog.com/); the
+project is pre-1.0, so a breaking change can land in a minor release —
+those are called out explicitly.
+
+## 0.3.0 — 2026-08-11
+
+The maturation release: the SDK becomes deterministic, testable,
+operationally complete from the CLI, and honest about what the target
+server can actually run. First tagged release.
+
+### Added
+
+- **Operational CLI.** `run`, `status`, `logs`, `cancel`, `retry`, and
+  `backfill` drive the backend run APIs, so routine run/observe/retry work
+  no longer means leaving the terminal for the console. `run`/`backfill`
+  accept a pipeline's logical id, name, or internal id.
+- **Named deployment environments.** Define `environments` in a
+  `brokoli.yaml` (or point `BROKOLI_CONFIG` at one) and target them with
+  `--env prod` instead of repeating `--server`/`--api-key`. Tokens are read
+  from a named env var (`token_env`), so no secret lives in the file.
+- **Auditable IR digests.** `deploy` prints a stable `sha256:` digest of
+  exactly what it deployed — identical across create/update and cosmetic
+  churn, so a no-op redeploy is visible. `compile --digest` emits the same
+  digest with no server, for CI to capture and diff.
+- **Typed resource references** (`brokoli.resources`): `Connection` (a
+  typed, validated `conn_id`) and `Secret`/`Variable`/`Param`/`EnvVar`,
+  which compile to the engine's `${namespace.name}` interpolation and are
+  resolved in node configs at run time. Kept deliberately distinct — in
+  type and documentation — from the authoring-time data refs (`DatasetRef`
+  et al.).
+- **A local test harness** (`brokoli.testing`): `graph()` to assert node
+  and edge shape, `run_task()` to unit-test a task's Python logic,
+  `ir_snapshot()`/`assert_stable_ir()` for golden-file and determinism
+  tests — all without deploying, and without emulating the engine.
+- **`py.typed`** and a supported type-check configuration, so consumers'
+  type checkers see the SDK's annotations.
+- **Per-feature examples** and a support matrix (`examples/README.md`),
+  each example gated in CI by `compile --check`.
+- **CI**: a test matrix across Python 3.9–3.13, a build/package job that
+  verifies `py.typed` and the test harness ship in the wheel, and an
+  examples-compile gate.
+
+### Changed
+
+- The `with Pipeline(...)` authoring context is now nesting-, thread-, and
+  async-safe (backed by `contextvars` instead of a class global).
+- Pipeline **discovery is separated from run-time side effects**: files
+  import under their own module name (never `__main__`), and
+  `BROKOLI_DISCOVERY` is set during import so module-level code can skip
+  run-time-only setup.
+- **Deterministic compilation**: stable node ids, a normalized IR
+  snapshot/diff, and validation that the same source compiles to the same
+  semantic diff.
+- Deploy negotiates the server's supported **IR versions** and
+  **execution features** before persisting, refusing — with a named
+  reason — anything the target server can't run.
+- Every decorator (`@source`/`@sink`/`@map`/…) now shares `@task`'s
+  automatic packaging (helpers, constants, imports, closures), and package
+  metadata declares third-party requirements.
+
+### Fixed / hardened
+
+- Local validation catches cycles, enum typos, fan-in truncation, and
+  unsupported/compile-only features before deploy, and validates every
+  emitted payload against core's canonical schema.
+- Unsupported `Pipeline(...)` options (`catch_up`, `max_retries`,
+  `concurrency`) are **rejected at construction** rather than silently
+  dropped; hooks (`on_failure=…`) are real, persisted webhook hooks.
+  *(Breaking: these previously no-op'd.)*
+- Auth/network errors during the deploy upsert lookup surface as errors
+  instead of being swallowed into a spurious create.

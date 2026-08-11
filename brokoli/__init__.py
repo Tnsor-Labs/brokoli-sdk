@@ -28,7 +28,7 @@ from brokoli.resources import (
 )
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_ir
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     # Core
     "Pipeline", "TaskResult", "ParseError",
