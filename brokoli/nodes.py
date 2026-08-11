@@ -554,21 +554,36 @@ def sink_db(
     mode: str = "append",
     conn_id: Any = UNSET,
     uri: Any = UNSET,
+    key_columns: Any = UNSET,
     retries: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
-    """Database sink -- write data to a table.
+    """Database sink -- write a dataset to a table.
+
+    The server generates and runs the write SQL from the input rows, so no
+    upstream ``sql_generate`` node is needed. ``mode`` selects how:
+
+    * ``"append"`` (default) -- add the rows to whatever is already there.
+    * ``"overwrite"`` -- clear the table first, then add the rows.
+    * ``"upsert"`` -- insert, updating rows that collide on ``key_columns``
+      (required for upsert; the conflict target). Supported on Postgres,
+      SQLite, and MySQL.
 
     Example::
 
         with Pipeline("Load") as p:
-            data = source_db("Extract", query="SELECT * FROM staging.users")
-            sink_db("Write users", input=data, table="public.users",
-                    mode="upsert", conn_id="warehouse")
+            users = source_db("Extract", query="SELECT * FROM staging.users")
+            sink_db("Write users", input=users, table="public.users",
+                    mode="upsert", key_columns=["id"], conn_id="warehouse")
     """
     optional: dict = {
         "conn_id": conn_id,
         "uri": uri,
+        "key_columns": (
+            list(key_columns)
+            if key_columns is not UNSET and key_columns is not None
+            else UNSET
+        ),
     }
     if retries is not UNSET and retries is not None:
         optional["max_retries"] = retries
@@ -649,7 +664,12 @@ def migrate(
     target_conn_id: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
-    """Database migration -- copy data between two databases.
+    """Database migration -- copy rows from one database to another.
+
+    Runs ``query`` against the source and inserts the results into ``table``
+    on the target. This is a plain append copy; ``overwrite`` and ``upsert``
+    are not supported here -- sink into the target with :func:`sink_db` for
+    those.
 
     Example::
 
@@ -657,7 +677,7 @@ def migrate(
             migrate("Copy users",
                     source_conn_id="oltp", target_conn_id="warehouse",
                     query="SELECT * FROM users WHERE updated_at > NOW() - INTERVAL '1 day'",
-                    table="analytics.users", mode="upsert")
+                    table="analytics.users")
     """
     config = _build_config(
         {
