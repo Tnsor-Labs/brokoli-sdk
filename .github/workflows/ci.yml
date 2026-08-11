@@ -53,6 +53,33 @@ jobs:
           /tmp/wheeltest/bin/pip install dist/*.whl
           /tmp/wheeltest/bin/brokoli --help >/dev/null
 
+  # Gate: every shipped example must compile-check against the current
+  # SDK. Two real-world examples had silently rotted (they passed a kwarg
+  # the SDK later began refusing at construction); this job makes "the
+  # examples run" a machine-checked promise instead of a hope.
+  examples:
+    name: Examples compile-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: compile --check every example
+        run: |
+          fail=0
+          for f in examples/*.py; do
+            if python -m brokoli.cli compile "$f" --check >/dev/null 2>&1; then
+              echo "OK  $f"
+            else
+              echo "::error file=$f::example fails compile --check"
+              python -m brokoli.cli compile "$f" --check || true
+              fail=1
+            fi
+          done
+          exit $fail
+
   # Advisory: lint and type-check run and report, but do not gate yet —
   # the existing code predates both, so gating would be a red wall on day
   # one. Cleaning to green is incremental; flip continue-on-error off per
