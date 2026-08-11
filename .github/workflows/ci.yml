@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+jobs:
+  # Gate: the SDK must pass its suite on every supported Python.
+  test:
+    name: Test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (with dev extras)
+        run: python -m pip install -e ".[dev]"
+      - name: Test
+        run: python -m pytest -q
+
+  # Gate: the package must build, install from the wheel, expose the CLI,
+  # and — the reason this job exists — actually ship py.typed.
+  build:
+    name: Build & package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build
+      - name: py.typed is in the wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          echo "Inspecting $wheel"
+          python -m zipfile -l "$wheel" | grep -q "brokoli/py.typed" \
+            || { echo "::error::py.typed missing from wheel — consumers won't get types"; exit 1; }
+      - name: Install the built wheel in a clean env and smoke the CLI
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install dist/*.whl
+          /tmp/wheeltest/bin/brokoli --help >/dev/null
+
+  # Advisory: lint and type-check run and report, but do not gate yet —
+  # the existing code predates both, so gating would be a red wall on day
+  # one. Cleaning to green is incremental; flip continue-on-error off per
+  # tool once it passes.
+  lint:
+    name: Lint & types (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - name: ruff (lint)
+        run: python -m ruff check brokoli
+      - name: ruff (format)
+        run: python -m ruff format --check brokoli
+      - name: mypy
+        run: python -m mypy brokoli

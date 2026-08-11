@@ -117,6 +117,15 @@ class TestRequiresModules:
         assert "requires_modules" not in _cfg(p, "Work").get("package", {})
 
     def test_third_party_import_declared(self, tmp_path):
+        import sys
+
+        # requires_modules is derived from sys.stdlib_module_names, which
+        # only exists on 3.10+. On 3.9 the SDK documents that it can't tell
+        # stdlib from third-party cheaply and lists nothing — so there's no
+        # requires_modules to assert. (The matrix surfaced this.)
+        if not hasattr(sys, "stdlib_module_names"):
+            pytest.skip("requires_modules needs sys.stdlib_module_names (Python 3.10+)")
+
         from brokoli.cli import load_pipeline_from_file
 
         f = tmp_path / "third_party.py"
