@@ -8,6 +8,7 @@ from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
 from brokoli import dbt, notify, migrate, condition_node
 from brokoli import code as code_node
+from brokoli import Connection
 from brokoli.exceptions import PipelineError
 
 
@@ -744,7 +745,24 @@ class TestRetryTimeoutParity:
         assert config["batch_size"] == 250
         assert config["auth_user"] == "svc"
         assert config["auth_password"] == "secret"
-        assert "conn_id" not in config  # deliberately not an SDK parameter -- see docstring
+
+    def test_sink_api_conn_id(self):
+        # brokoli-sdk#48 shipped without this parameter because the engine's
+        # connection resolver had no case for sink_api yet (a conn_id would
+        # have compiled but been silently ignored server-side); fixed in
+        # brokoli#137, so this is now real.
+        with Pipeline("t") as p:
+            n = sink_api("Post", conn_id="external-api", url="/events")
+
+        config = p._nodes[n.node_id]["config"]
+        assert config["conn_id"] == "external-api"
+
+    def test_sink_api_conn_id_accepts_typed_connection(self):
+        with Pipeline("t") as p:
+            n = sink_api("Post", conn_id=Connection("external-api"), url="/events")
+
+        config = p._nodes[n.node_id]["config"]
+        assert config["conn_id"] == "external-api"
 
     def test_migrate_dialect_chunk_size_create_table(self):
         with Pipeline("t") as p:
