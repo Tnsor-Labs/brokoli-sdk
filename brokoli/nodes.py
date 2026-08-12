@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional, Any
 
-from brokoli.exceptions import ContextError
+from brokoli.exceptions import ContextError, PipelineError
 from brokoli.pagination import PaginationStrategy
 from brokoli.resources import ResourceRef
 from brokoli.parsing import ParseError, parse_quality_rule
@@ -459,6 +459,8 @@ def join(
     left: Optional[NodeRef] = None,
     right: Optional[NodeRef] = None,
     on: str = "",
+    left_key: str = "",
+    right_key: str = "",
     how: str = "inner",
     retries: Any = UNSET,
     retry_backoff: str = "exponential",
@@ -468,23 +470,51 @@ def join(
 ) -> DatasetRef:
     """Join two datasets -- inner, left, right, or full.
 
-    Example::
+    Example (same column name on both sides)::
 
         with Pipeline("Merge") as p:
             users = source_db("Users", query="SELECT * FROM users")
             orders = source_db("Orders", query="SELECT * FROM orders")
             merged = join("User orders", left=users, right=orders,
-                          on="user_id", how="left")
-    """
-    config: dict = {"join_type": how}
+                          left_key="user_id", how="left")
 
-    if "=" in on:
+    Example (differing column names)::
+
+        merged = join("User orders", left=users, right=orders,
+                      left_key="id", right_key="user_id", how="left")
+
+    ``right_key`` defaults to ``left_key`` when omitted -- the common
+    same-column-name case. ``on`` is accepted for backward compatibility
+    (either a bare column name, or ``"left=right"`` for differing names)
+    but cannot be combined with ``left_key``/``right_key`` -- brokoli-sdk#51:
+    that split-on-"=" string form was undocumented and silently mis-splits a
+    column name that itself contains "=".
+    """
+    if on and (left_key or right_key):
+        raise PipelineError(
+            f"join({name!r}, ...): pass either on=... or "
+            "left_key=/right_key=..., not both."
+        )
+
+    if left_key or right_key:
+        resolved_left, resolved_right = left_key, (right_key or left_key)
+    elif "=" in on:
         parts = on.split("=", 1)
-        config["left_key"] = parts[0].strip()
-        config["right_key"] = parts[1].strip()
+        resolved_left, resolved_right = parts[0].strip(), parts[1].strip()
+        if not resolved_left or not resolved_right:
+            raise PipelineError(
+                f"join({name!r}, on={on!r}): expected 'column' or "
+                "'left_column=right_column' with a non-empty name on "
+                "each side."
+            )
     else:
-        config["left_key"] = on
-        config["right_key"] = on
+        resolved_left = resolved_right = on
+
+    config: dict = {
+        "join_type": how,
+        "left_key": resolved_left,
+        "right_key": resolved_right,
+    }
 
     _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 

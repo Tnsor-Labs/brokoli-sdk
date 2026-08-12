@@ -217,6 +217,68 @@ class TestNodeTypes:
         assert node["config"]["url"] == "https://hooks.slack.com"
 
 
+class TestJoinKeys:
+    """brokoli-sdk#51: explicit left_key/right_key, replacing the
+    undocumented on='left=right' magic-string split as the primary API.
+    """
+
+    def test_left_key_only_defaults_right_key(self):
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            j = join("Merge", a, b, left_key="user_id")
+
+        node = p._nodes[j.node_id]
+        assert node["config"]["left_key"] == "user_id"
+        assert node["config"]["right_key"] == "user_id"
+
+    def test_left_key_and_right_key_differ(self):
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            j = join("Merge", a, b, left_key="id", right_key="user_id")
+
+        node = p._nodes[j.node_id]
+        assert node["config"]["left_key"] == "id"
+        assert node["config"]["right_key"] == "user_id"
+
+    def test_on_still_works_same_name(self):
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            j = join("Merge", a, b, on="user_id")
+
+        node = p._nodes[j.node_id]
+        assert node["config"]["left_key"] == "user_id"
+        assert node["config"]["right_key"] == "user_id"
+
+    def test_on_and_left_key_together_raises(self):
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            with pytest.raises(PipelineError, match="not both"):
+                join("Merge", a, b, on="id", left_key="id")
+
+    def test_on_split_form_with_empty_side_raises(self):
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            with pytest.raises(PipelineError, match="non-empty name"):
+                join("Merge", a, b, on="id=")
+
+    def test_a_column_named_with_equals_is_unambiguous_via_left_key(self):
+        # The exact silent-mis-split case the split-string form couldn't
+        # express: a column literally named "a=b", same name both sides.
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            j = join("Merge", a, b, left_key="a=b")
+
+        node = p._nodes[j.node_id]
+        assert node["config"]["left_key"] == "a=b"
+        assert node["config"]["right_key"] == "a=b"
+
+
 class TestTaskDecorator:
     def test_task_basic(self):
         with Pipeline("test") as p:
