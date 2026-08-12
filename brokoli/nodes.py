@@ -60,6 +60,30 @@ def _build_config(base: dict, optional: dict) -> dict:
     return config
 
 
+def _add_retry_timeout(
+    optional: dict,
+    retries: Any,
+    retry_backoff: str,
+    retry_delay: Any,
+    timeout: Any,
+) -> None:
+    """Merge the engine's generic per-node retry/timeout knobs into *optional*.
+
+    ``max_retries``, ``retry_backoff``, ``retry_delay``, and ``timeout`` are
+    read by the runner for every node type -- not just the handful of
+    source/sink nodes that historically exposed them from the SDK
+    (brokoli-sdk#48). Mutates *optional* in place; keys stay UNSET (and so
+    get dropped by ``_build_config``) unless the caller passed a value.
+    """
+    if retries is not UNSET and retries is not None:
+        optional["max_retries"] = retries
+        optional["retry_backoff"] = retry_backoff
+    if retry_delay is not UNSET and retry_delay is not None:
+        optional["retry_delay"] = retry_delay
+    if timeout is not UNSET and timeout is not None:
+        optional["timeout"] = timeout
+
+
 def _normalize_value(value: Any) -> Any:
     """Compile a typed resource reference to its wire value; pass others through.
 
@@ -130,6 +154,7 @@ def source_db(
     uri: Any = UNSET,
     retries: Any = UNSET,
     retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
@@ -149,11 +174,7 @@ def source_db(
         "conn_id": conn_id,
         "uri": uri,
     }
-    if retries is not UNSET and retries is not None:
-        optional["max_retries"] = retries
-        optional["retry_backoff"] = retry_backoff
-    if timeout is not UNSET and timeout is not None:
-        optional["timeout"] = timeout
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
     config = _build_config({"query": query}, optional)
     return _register_node(
@@ -170,6 +191,7 @@ def source_api(
     conn_id: Any = UNSET,
     retries: Any = UNSET,
     retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     params: Any = UNSET,
     response: str = "dataset",
@@ -262,11 +284,7 @@ def source_api(
         "records": records,
         "value_path": value_path,
     }
-    if retries is not UNSET and retries is not None:
-        optional["max_retries"] = retries
-        optional["retry_backoff"] = retry_backoff
-    if timeout is not UNSET and timeout is not None:
-        optional["timeout"] = timeout
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
     if pagination is not UNSET and pagination is not None:
         if isinstance(pagination, PaginationStrategy):
@@ -298,6 +316,10 @@ def source_file(
     name: str,
     path: str = "",
     format: str = "csv",
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
@@ -307,7 +329,9 @@ def source_file(
         with Pipeline("CSV Import") as p:
             data = source_file("Read users", path="/data/users.csv", format="csv")
     """
-    config = _build_config({"path": path, "format": format}, {})
+    optional: dict = {}
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    config = _build_config({"path": path, "format": format}, optional)
     return _register_node(
         "source_file", name, config, ref_cls=DatasetRef, node_key=node_key
     )
@@ -385,6 +409,10 @@ def transform(
     name: str,
     input: Optional[NodeRef] = None,
     rules: list | None = None,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Transform data -- filter, sort, rename, aggregate, deduplicate.
@@ -418,6 +446,7 @@ def transform(
     config: dict = {}
     if rules:
         config["rules"] = _parse_transform_rules(list(rules))
+    _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 
     return _register_node(
         "transform", name, config, *_input_args(input),
@@ -431,6 +460,10 @@ def join(
     right: Optional[NodeRef] = None,
     on: str = "",
     how: str = "inner",
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Join two datasets -- inner, left, right, or full.
@@ -452,6 +485,8 @@ def join(
     else:
         config["left_key"] = on
         config["right_key"] = on
+
+    _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 
     args: list[NodeRef] = []
     if left is not None:
@@ -484,6 +519,10 @@ def quality_check(
     name: str,
     input: Optional[NodeRef] = None,
     rules: list | None = None,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
     """Quality check -- validate data against rules.
@@ -507,6 +546,7 @@ def quality_check(
     config: dict = {}
     if rules:
         config["rules"] = _parse_quality_rules(list(rules))
+    _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 
     return _register_node(
         "quality_check", name, config, *_input_args(input), node_key=node_key
@@ -519,6 +559,10 @@ def code(
     language: str = "python",
     script: str = "",
     python_path: Any = UNSET,
+    timeout: Any = UNSET,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
     """Custom code node -- run Python (or other) scripts.
@@ -527,17 +571,20 @@ def code(
 
         with Pipeline("Custom") as p:
             data = source_db("Extract", query="SELECT * FROM events")
-            code("Enrich", input=data, script=\"\"\"
+            code("Enrich", input=data, timeout=60, script=\"\"\"
                 import pandas as pd
                 df = pd.DataFrame(rows, columns=columns)
                 df['year'] = pd.to_datetime(df['date']).dt.year
                 output_data = {"columns": list(df.columns), "rows": df.to_dict("records")}
             \"\"\")
+
+    ``timeout`` (seconds) overrides the engine's 30-second default for the
+    script's execution. (brokoli-sdk#48 -- previously not exposed here at
+    all, even though every source/sink node had it.)
     """
-    config = _build_config(
-        {"language": language, "script": script},
-        {"python_path": python_path},
-    )
+    optional: dict = {"python_path": python_path}
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    config = _build_config({"language": language, "script": script}, optional)
     return _register_node(
         "code", name, config, *_input_args(input), node_key=node_key
     )
@@ -556,6 +603,9 @@ def sink_db(
     uri: Any = UNSET,
     key_columns: Any = UNSET,
     retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
     """Database sink -- write a dataset to a table.
@@ -585,8 +635,7 @@ def sink_db(
             else UNSET
         ),
     }
-    if retries is not UNSET and retries is not None:
-        optional["max_retries"] = retries
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
     config = _build_config({"table": table, "mode": mode}, optional)
     return _register_node(
@@ -600,6 +649,10 @@ def sink_file(
     path: str = "",
     format: str = "csv",
     compress: Any = UNSET,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
     """File sink -- write data to CSV, JSON, Parquet, etc.
@@ -611,10 +664,9 @@ def sink_file(
             sink_file("Save report", input=data, path="/output/report.parquet",
                       format="parquet", compress="snappy")
     """
-    config = _build_config(
-        {"path": path, "format": format},
-        {"compress": compress},
-    )
+    optional: dict = {"compress": compress}
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    config = _build_config({"path": path, "format": format}, optional)
     return _register_node(
         "sink_file", name, config, *_input_args(input), node_key=node_key
     )
@@ -627,6 +679,13 @@ def sink_api(
     method: str = "POST",
     body: Any = UNSET,
     headers: Any = UNSET,
+    batch_size: Any = UNSET,
+    auth_user: Any = UNSET,
+    auth_password: Any = UNSET,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
     """API sink -- send data to an HTTP endpoint.
@@ -637,12 +696,28 @@ def sink_api(
             data = source_db("Extract", query="SELECT * FROM events")
             sink_api("Post events", input=data,
                      url="https://ingest.example.com/events",
-                     headers={"Authorization": "Bearer $API_TOKEN"})
+                     headers={"Authorization": "Bearer $API_TOKEN"},
+                     batch_size=200)
+
+    ``batch_size`` (default 100) controls how many rows go in each POST;
+    ``auth_user``/``auth_password`` send HTTP Basic Auth on every request.
+    (brokoli-sdk#48 -- previously none of these three were exposed here.)
+
+    There is intentionally no ``conn_id`` parameter: the engine's connection
+    resolver does not have a case for ``sink_api`` today, so a ``conn_id``
+    in this node's config is silently ignored server-side rather than
+    injecting a base URL or credentials -- adding it here would compile
+    something that looks like it works but doesn't. Use ``auth_user`` /
+    ``auth_password`` (or a literal header) until that's fixed upstream.
     """
     optional: dict = {
         "body_template": body,
         "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
+        "batch_size": batch_size,
+        "auth_user": auth_user,
+        "auth_password": auth_password,
     }
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"url": url, "method": method}, optional)
     return _register_node(
         "sink_api", name, config, *_input_args(input), node_key=node_key
@@ -663,6 +738,13 @@ def migrate(
     key_columns: Any = UNSET,
     source_conn_id: Any = UNSET,
     target_conn_id: Any = UNSET,
+    dialect: Any = UNSET,
+    chunk_size: Any = UNSET,
+    create_table: Any = UNSET,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Database migration -- copy rows from one database to another.
@@ -676,14 +758,35 @@ def migrate(
     * ``"upsert"`` -- insert, updating rows that collide on ``key_columns``
       (required for upsert).
 
+    ``dialect`` overrides the target SQL dialect (inferred from the URI/
+    connection when unset), ``chunk_size`` overrides the per-insert-batch
+    row count (default 5000), and ``create_table`` creates the target table
+    if it doesn't exist. (brokoli-sdk#48 -- previously none of the three had
+    an SDK parameter; only settable by hand-editing the compiled YAML.)
+
     Example::
 
         with Pipeline("Replicate") as p:
             migrate("Copy users",
                     source_conn_id="oltp", target_conn_id="warehouse",
                     query="SELECT * FROM users WHERE updated_at > NOW() - INTERVAL '1 day'",
-                    table="analytics.users", mode="upsert", key_columns=["id"])
+                    table="analytics.users", mode="upsert", key_columns=["id"],
+                    chunk_size=1000)
     """
+    optional: dict = {
+        "source_conn_id": source_conn_id,
+        "dest_conn_id": target_conn_id,
+        "key_columns": (
+            list(key_columns)
+            if key_columns is not UNSET and key_columns is not None
+            else UNSET
+        ),
+        "dialect": dialect,
+        "chunk_size": chunk_size,
+        "create_table": create_table,
+    }
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+
     config = _build_config(
         {
             "source_uri": source_uri,
@@ -692,15 +795,7 @@ def migrate(
             "dest_table": table,
             "mode": mode,
         },
-        {
-            "source_conn_id": source_conn_id,
-            "dest_conn_id": target_conn_id,
-            "key_columns": (
-                list(key_columns)
-                if key_columns is not UNSET and key_columns is not None
-                else UNSET
-            ),
-        },
+        optional,
     )
     return _register_node(
         "migrate", name, config, ref_cls=DatasetRef, node_key=node_key
@@ -716,6 +811,10 @@ def dbt(
     profiles_dir: Any = UNSET,
     vars: Any = UNSET,
     input: Optional[NodeRef] = None,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> DatasetRef:
     """Run dbt commands -- run, test, build, seed, snapshot.
@@ -731,16 +830,15 @@ def dbt(
             raw >> models >> notify("Done", notify_type="slack",
                                     webhook_url="https://hooks.slack.com/...")
     """
-    config = _build_config(
-        {"command": command},
-        {
-            "project_dir": project_dir,
-            "target": target,
-            "select": select,
-            "profiles_dir": profiles_dir,
-            "vars": vars,
-        },
-    )
+    optional: dict = {
+        "project_dir": project_dir,
+        "target": target,
+        "select": select,
+        "profiles_dir": profiles_dir,
+        "vars": vars,
+    }
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    config = _build_config({"command": command}, optional)
     return _register_node(
         "dbt", name, config, *_input_args(input),
         ref_cls=DatasetRef, node_key=node_key,
@@ -754,6 +852,10 @@ def notify(
     webhook_url: str = "",
     message: Any = UNSET,
     channel: Any = UNSET,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
     node_key: Optional[str] = None,
 ) -> NodeRef:
     """Send a notification -- Slack, webhook, or email.
@@ -767,12 +869,14 @@ def notify(
                            message="Pipeline {{pipeline}} completed with {{rows}} rows",
                            channel="#data-alerts")
     """
+    optional: dict = {
+        "message": message,
+        "channel": channel,
+    }
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config(
         {"notify_type": notify_type, "webhook_url": webhook_url},
-        {
-            "message": message,
-            "channel": channel,
-        },
+        optional,
     )
     return _register_node(
         "notify", name, config, *_input_args(input), node_key=node_key

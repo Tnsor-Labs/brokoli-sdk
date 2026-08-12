@@ -7,6 +7,7 @@ from brokoli import source_db, source_api, source_file
 from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
 from brokoli import dbt, notify, migrate, condition_node
+from brokoli import code as code_node
 from brokoli.exceptions import PipelineError
 
 
@@ -619,4 +620,105 @@ class TestNewNodeTypes:
         assert data["schedule"] == "0 5 * * *"
         types = {n["type"] for n in data["nodes"]}
         assert types == {"source_db", "dbt", "quality_check", "notify"}
+        json.dumps(data)
+
+
+class TestRetryTimeoutParity:
+    """brokoli-sdk#48: max_retries/retry_backoff/retry_delay/timeout are
+    generic per-node engine knobs (read for every node type by the runner),
+    but historically only source_db/source_api/sink_db exposed a subset of
+    them. Every node factory should accept and compile all four the same
+    way -- spot-check a representative factory from each prior state
+    (had none, had some, had all) rather than every one of the twelve.
+    """
+
+    def test_previously_bare_factory_gets_all_four(self):
+        # transform() had none of these before.
+        with Pipeline("t") as p:
+            n = transform("Clean", rules=[{"type": "drop_columns", "columns": ["x"]}],
+                          retries=2, retry_backoff="exponential", retry_delay=500, timeout=45)
+
+        config = p._nodes[n.node_id]["config"]
+        assert config["max_retries"] == 2
+        assert config["retry_backoff"] == "exponential"
+        assert config["retry_delay"] == 500
+        assert config["timeout"] == 45
+
+    def test_sink_db_gains_retry_backoff_and_retry_delay(self):
+        # sink_db previously mapped retries -> max_retries only, with no
+        # retry_backoff (inconsistent with source_db/source_api) and no
+        # retry_delay/timeout at all.
+        with Pipeline("t") as p:
+            n = sink_db("Write", table="t", conn_id="pg",
+                       retries=3, retry_delay=1000, timeout=60)
+
+        config = p._nodes[n.node_id]["config"]
+        assert config["max_retries"] == 3
+        assert config["retry_backoff"] == "exponential"
+        assert config["retry_delay"] == 1000
+        assert config["timeout"] == 60
+
+    def test_omitted_by_default(self):
+        with Pipeline("t") as p:
+            n = notify("N", webhook_url="https://example.test")
+
+        config = p._nodes[n.node_id]["config"]
+        for key in ("max_retries", "retry_backoff", "retry_delay", "timeout"):
+            assert key not in config
+
+    def test_code_timeout(self):
+        with Pipeline("t") as p:
+            n = code_node("Run", script="output_data = {'columns': columns, 'rows': rows}",
+                     timeout=90)
+
+        assert p._nodes[n.node_id]["config"]["timeout"] == 90
+
+    def test_sink_api_batch_size_and_basic_auth(self):
+        with Pipeline("t") as p:
+            n = sink_api("Post", url="https://example.test/ingest",
+                        batch_size=250, auth_user="svc", auth_password="secret")
+
+        config = p._nodes[n.node_id]["config"]
+        assert config["batch_size"] == 250
+        assert config["auth_user"] == "svc"
+        assert config["auth_password"] == "secret"
+        assert "conn_id" not in config  # deliberately not an SDK parameter -- see docstring
+
+    def test_migrate_dialect_chunk_size_create_table(self):
+        with Pipeline("t") as p:
+            n = migrate("Copy", source_conn_id="a", target_conn_id="b",
+                       query="SELECT 1", table="dst",
+                       dialect="postgres", chunk_size=1000, create_table=True)
+
+        config = p._nodes[n.node_id]["config"]
+        assert config["dialect"] == "postgres"
+        assert config["chunk_size"] == 1000
+        assert config["create_table"] is True
+
+    def test_all_twelve_factories_compile_with_retry_timeout_set(self):
+        """Every factory that gained the parameters actually accepts them --
+        catches a signature typo that per-factory spot checks might miss."""
+        with Pipeline("all", pipeline_id="all") as p:
+            a = source_db("A", conn_id="pg", query="SELECT 1", retries=1, timeout=5)
+            b = source_api("B", url="https://x", retries=1, timeout=5)
+            c = source_file("C", path="/x.csv", retries=1, timeout=5)
+            j = join("J", left=a, right=b, on="id", retries=1, timeout=5)
+            t = transform("T", input=j, rules=[{"type": "drop_columns", "columns": ["y"]}],
+                          retries=1, timeout=5)
+            q = quality_check("Q", input=t, rules=["not_null(id)"], retries=1, timeout=5)
+            cd = code_node("CD", input=q, script="output_data={'columns':columns,'rows':rows}",
+                      retries=1, timeout=5)
+            sd = sink_db("SD", input=cd, table="t", conn_id="pg", retries=1, timeout=5)
+            sf = sink_file("SF", input=cd, path="/out.csv", retries=1, timeout=5)
+            sa = sink_api("SA", input=cd, url="https://y", retries=1, timeout=5)
+            dt = dbt("DT", input=cd, retries=1, timeout=5)
+            notify("NT", input=dt, webhook_url="https://z", retries=1, timeout=5)
+            migrate("MG", source_conn_id="pg", target_conn_id="pg",
+                   query="SELECT 1", table="t2", retries=1, timeout=5)
+
+        data = p.to_json()
+        assert len(data["nodes"]) == 13
+        for node in data["nodes"]:
+            assert node["config"]["max_retries"] == 1
+            assert node["config"]["timeout"] == 5
         json.dumps(data)
