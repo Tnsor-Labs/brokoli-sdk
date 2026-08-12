@@ -220,7 +220,9 @@ def _validate_sink_api(name: str, config: dict[str, Any], result: ValidationResu
 
 def _validate_join(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("left_key") and not config.get("right_key"):
-        result.add_error(name, "on", "Join requires join keys (on='left_key=right_key')")
+        result.add_error(
+            name, "on", "Join requires join keys (left_key=... / right_key=...)"
+        )
     _validate_enum(name, config, "join_type", _JOIN_TYPES, result)
 
 
