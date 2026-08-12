@@ -1792,6 +1792,7 @@ class Pipeline:
         pipeline_id: str | None = None,
         description: str = "",
         schedule: str = "",
+        schedule_timezone: str = "",
         catch_up: bool | None = None,
         sla: str = "",
         depends_on: list[str] | None = None,
@@ -1824,6 +1825,7 @@ class Pipeline:
         self.pipeline_id = pipeline_id or self._generate_pipeline_id(name)
         self.description = description
         self.schedule = schedule
+        self.schedule_timezone = schedule_timezone
         self.tags: list[str] = tags or []
         self.webhook = webhook
         self.on_start = _coerce_hook("on_start", on_start)
@@ -2029,6 +2031,9 @@ class Pipeline:
             "tags": self.tags,
             "depends_on": self.depends_on,
         }
+
+        if self.schedule_timezone:
+            result["schedule_timezone"] = self.schedule_timezone
 
         if self.sla_deadline:
             result["sla_deadline"] = self.sla_deadline

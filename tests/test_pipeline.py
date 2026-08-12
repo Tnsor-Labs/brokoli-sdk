@@ -29,6 +29,7 @@ class TestPipelineBasic:
             "test_meta",
             description="Test pipeline",
             schedule="0 2 * * *",
+            schedule_timezone="America/New_York",
             sla="07:30 America/New_York",
             tags=["test", "production"],
             depends_on=["upstream"],
@@ -38,6 +39,7 @@ class TestPipelineBasic:
 
         data = p.to_json()
         assert data["description"] == "Test pipeline"
+        assert data["schedule_timezone"] == "America/New_York"
         assert data["sla_deadline"] == "07:30"
         assert data["sla_timezone"] == "America/New_York"
         assert data["tags"] == ["test", "production"]
@@ -51,6 +53,13 @@ class TestPipelineBasic:
         data = p.to_json()
         assert data["sla_deadline"] == "08:00"
         assert data["sla_timezone"] == "UTC"
+
+    def test_pipeline_schedule_timezone_omitted_by_default(self):
+        with Pipeline("test_no_tz", schedule="0 6 * * *") as p:
+            source_db("S", query="SELECT 1")
+
+        data = p.to_json()
+        assert "schedule_timezone" not in data
 
 
 class TestChaining:
