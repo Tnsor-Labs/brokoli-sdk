@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+import brokoli
 from brokoli.compatibility import preflight_server_compatibility
 from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir
@@ -891,6 +892,9 @@ def backfill_cmd(args: argparse.Namespace) -> int:
 def main() -> None:
     """CLI entry point. This is the only place that catches exceptions and exits."""
     parser = argparse.ArgumentParser(prog="brokoli", description="Brokoli Python SDK CLI")
+    parser.add_argument(
+        "--version", "-V", action="version", version=f"brokoli {brokoli.__version__}"
+    )
     sub = parser.add_subparsers(dest="command")
 
     # deploy
