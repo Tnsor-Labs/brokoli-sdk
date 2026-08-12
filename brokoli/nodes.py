@@ -709,6 +709,7 @@ def sink_api(
     method: str = "POST",
     body: Any = UNSET,
     headers: Any = UNSET,
+    conn_id: Any = UNSET,
     batch_size: Any = UNSET,
     auth_user: Any = UNSET,
     auth_password: Any = UNSET,
@@ -725,24 +726,28 @@ def sink_api(
         with Pipeline("Webhook") as p:
             data = source_db("Extract", query="SELECT * FROM events")
             sink_api("Post events", input=data,
-                     url="https://ingest.example.com/events",
-                     headers={"Authorization": "Bearer $API_TOKEN"},
+                     conn_id="external-api", url="/events",
                      batch_size=200)
 
-    ``batch_size`` (default 100) controls how many rows go in each POST;
-    ``auth_user``/``auth_password`` send HTTP Basic Auth on every request.
-    (brokoli-sdk#48 -- previously none of these three were exposed here.)
+    ``conn_id`` inherits the base URL and Basic Auth from a saved
+    connection, the same way ``source_api`` does -- a relative ``url``
+    (starting with ``/``) is appended to the connection's host; an absolute
+    one is used as-is. (brokoli-sdk#48 deliberately shipped without this
+    parameter because the engine's connection resolver had no case for
+    ``sink_api`` yet -- fixed server-side in brokoli#137; safe to use as of
+    any server carrying that fix.)
 
-    There is intentionally no ``conn_id`` parameter: the engine's connection
-    resolver does not have a case for ``sink_api`` today, so a ``conn_id``
-    in this node's config is silently ignored server-side rather than
-    injecting a base URL or credentials -- adding it here would compile
-    something that looks like it works but doesn't. Use ``auth_user`` /
-    ``auth_password`` (or a literal header) until that's fixed upstream.
+    ``batch_size`` (default 100) controls how many rows go in each POST;
+    ``auth_user``/``auth_password`` send HTTP Basic Auth directly, without a
+    saved connection. If both are set, the connection wins: a ``conn_id``
+    whose saved connection has credentials replaces ``auth_user``/
+    ``auth_password`` on the outgoing request, the same precedence
+    ``source_api`` already has.
     """
     optional: dict = {
         "body_template": body,
         "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
+        "conn_id": conn_id,
         "batch_size": batch_size,
         "auth_user": auth_user,
         "auth_password": auth_password,
