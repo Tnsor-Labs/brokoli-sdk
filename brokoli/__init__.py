@@ -27,6 +27,7 @@ from brokoli.resources import (
     Connection, ResourceRef, InterpolationRef, Secret, Variable, Param, EnvVar,
 )
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_ir
+from brokoli.client import APIError, AuthError, Client, Run, RunFailed, TERMINAL_RUN_STATUSES
 
 __version__ = "0.3.0"
 __all__ = [
@@ -59,4 +60,7 @@ __all__ = [
     "next_link_pages", "link_header_pages",
     # Normalized comparison artifacts
     "normalize_ir", "canonical_json", "render_ir", "diff_ir", "ir_digest",
+    # Run-ops client (brokoli-sdk#57) -- fire, wait on, cancel, and read
+    # runs programmatically; deploy without shelling out to the CLI.
+    "Client", "Run", "APIError", "AuthError", "RunFailed", "TERMINAL_RUN_STATUSES",
 ]
