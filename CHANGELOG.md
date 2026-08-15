@@ -5,7 +5,7 @@ format is loosely [Keep a Changelog](https://keepachangelog.com/); the
 project is pre-1.0, so a breaking change can land in a minor release —
 those are called out explicitly.
 
-## Unreleased
+## 0.4.0 — 2026-08-15
 
 ### Added
 

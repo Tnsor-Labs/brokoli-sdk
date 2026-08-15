@@ -29,7 +29,7 @@ from brokoli.resources import (
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_ir
 from brokoli.client import APIError, AuthError, Client, Run, RunFailed, TERMINAL_RUN_STATUSES
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     # Core
     "Pipeline", "TaskResult", "ParseError",
