@@ -5,6 +5,33 @@ format is loosely [Keep a Changelog](https://keepachangelog.com/); the
 project is pre-1.0, so a breaking change can land in a minor release —
 those are called out explicitly.
 
+## Unreleased
+
+### Added
+
+- **Programmatic run-ops client** (#57 items 1–6, `brokoli.Client`). The
+  operational surface the CLI already had, as a library: fire runs, wait
+  on them, cancel them, read their logs, and deploy pipelines in-process.
+  Written to replace the raw-urllib scripts the platform's own
+  production-readiness verification had to hand-roll.
+  - `Client(server, api_key=...)` or `Client(server, username=...,
+    password=...)` — credentialed clients log in lazily and renegotiate
+    exactly once per request on 401, so long-lived harnesses survive
+    token expiry. Thread-safe; stdlib-only.
+  - `client.run(pipeline, params=...) -> Run`; `Run.wait(timeout,
+    poll_interval, raise_on_failure=...)`, `.status()`, `.node_runs()`,
+    `.cancel()`, `.logs(level=..., node=...)`.
+  - `client.pipelines()` / `client.pipeline(id_or_pipeline_id_or_name)`
+    with the CLI's resolution precedence, cursor pagination, and every
+    historical response shape absorbed in one place — including the
+    trigger response's `run_id`/`id`/nested variants that scripts kept
+    re-parsing wrong.
+  - `client.deploy(pipeline)` with the same fail-closed matching as
+    `brokoli deploy` (pipeline_id first, never a guess across
+    duplicates), minus the printing.
+  - Exceptions: `APIError` (status/url/body attached), `AuthError`,
+    `RunFailed` (final run object attached for assertions).
+
 ## 0.3.0 — 2026-08-11
 
 The maturation release: the SDK becomes deterministic, testable,
