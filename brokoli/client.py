@@ -326,9 +326,7 @@ class Client:
         if not matches:
             raise APIError(f"no pipeline matching {identifier!r} on {self.server}", status=404)
         if len({i.get("id") for i in matches}) > 1:
-            raise APIError(
-                f"{identifier!r} matches multiple pipelines; use the internal id"
-            )
+            raise APIError(f"{identifier!r} matches multiple pipelines; use the internal id")
         return matches[0]
 
     def deploy(
@@ -370,9 +368,7 @@ class Client:
         else:
             matches = [r for r in remote if r.get("name") == payload.get("name")]
         if len({m.get("id") for m in matches}) > 1:
-            raise APIError(
-                f"deploy target for {payload.get('name')!r} is ambiguous on the server"
-            )
+            raise APIError(f"deploy target for {payload.get('name')!r} is ambiguous on the server")
 
         if matches:
             existing_id = matches[0]["id"]
@@ -457,9 +453,7 @@ class Run:
                     raise RunFailed(detail)
                 return detail
             if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"run {self.id} still {last_status!r} after {timeout:.0f}s"
-                )
+                raise TimeoutError(f"run {self.id} still {last_status!r} after {timeout:.0f}s")
             time.sleep(poll_interval)
 
     def cancel(self) -> dict[str, Any]:
@@ -475,9 +469,7 @@ class Run:
             query["level"] = level
         if node:
             query["node_id"] = node
-        payload = self.client._request(
-            "GET", f"/api/runs/{self.id}/logs", query=query or None
-        )
+        payload = self.client._request("GET", f"/api/runs/{self.id}/logs", query=query or None)
         entries = _absorb_list(payload, "logs", "items")
         if entries is None:
             raise APIError(f"malformed logs response for {self.id}: {payload!r}")

@@ -374,6 +374,4 @@ class TestDeploy:
     def _quiet_preflight(monkeypatch):
         import brokoli.compatibility as compatibility
 
-        monkeypatch.setattr(
-            compatibility, "preflight_server_compatibility", lambda *a, **k: None
-        )
+        monkeypatch.setattr(compatibility, "preflight_server_compatibility", lambda *a, **k: None)
