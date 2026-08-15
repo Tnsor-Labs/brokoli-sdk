@@ -63,7 +63,3 @@ class ParseError(BrokoliError):
     def __init__(self, rule_string: str, reason: str) -> None:
         self.rule_string = rule_string
         super().__init__(f"Cannot parse rule '{rule_string}': {reason}")
-
-    def __init__(self, rule_string: str, reason: str) -> None:
-        self.rule_string = rule_string
-        super().__init__(f"Cannot parse rule '{rule_string}': {reason}")

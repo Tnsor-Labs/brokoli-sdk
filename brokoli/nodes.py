@@ -7,7 +7,7 @@ from typing import Optional, Any
 from brokoli.exceptions import ContextError, PipelineError
 from brokoli.pagination import PaginationStrategy
 from brokoli.resources import ResourceRef
-from brokoli.parsing import ParseError, parse_quality_rule
+from brokoli.parsing import parse_quality_rule
 from brokoli.pipeline import (
     Pipeline, NodeRef, ConditionRef, _MultiRef,
     ArtifactRef, DatasetRef, ScalarRef,
