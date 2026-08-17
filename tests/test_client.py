@@ -115,6 +115,8 @@ class FakeBrokoli(BaseHTTPRequestHandler):
         cls = type(self)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})
+        if self.path == "/api/capabilities":
+            return self._json(200, {"supported_ir_versions": ["2.0"]})
         if self.path.startswith("/api/pipelines"):
             if not cls.use_cursor_shape:
                 return self._json(200, cls.pipelines_flat)
@@ -369,6 +371,20 @@ class TestDeploy:
         with pytest.raises(APIError, match="ambiguous"):
             client.deploy(self._pipeline(), validate=False)
         assert FakeBrokoli.deployed == []
+
+    def test_first_call_deploy_on_credentialed_client_logs_in_first(self, server):
+        # Deliberately does NOT monkeypatch preflight_server_compatibility:
+        # it and validate_pipeline read _auth_header() directly rather than
+        # going through _request, so a credentialed client whose very first
+        # call is deploy() must still be logged in before those two calls
+        # fire — otherwise they hit /api/capabilities unauthenticated and
+        # fail with a "verify your token" error despite valid credentials.
+        FakeBrokoli.use_cursor_shape = False
+        FakeBrokoli.pipelines_flat = []
+        client = Client(server, username="e2e", password="right")
+        result = client.deploy(self._pipeline(), validate=False)
+        assert FakeBrokoli.login_calls == 1
+        assert result["id"].startswith("created-")
 
     @staticmethod
     def _quiet_preflight(monkeypatch):

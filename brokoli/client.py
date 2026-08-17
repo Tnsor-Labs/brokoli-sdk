@@ -202,6 +202,22 @@ class Client:
             token = self._token
         return f"Bearer {token}" if token else ""
 
+    def _ensure_login(self) -> None:
+        """Trigger lazy login for a credentialed client's first use.
+
+        Callers that go through ``_request`` get this automatically.
+        Anything that reads ``_auth_header()`` directly instead of going
+        through ``_request`` — ``deploy``'s preflight/validation calls,
+        which hit ``/api/capabilities`` and ``/api/connections`` before
+        this client has made any other request — must call this first, or
+        a fresh credentialed client's very first ``deploy()`` sends those
+        two requests unauthenticated and gets a misleading "verify your
+        token" error despite having valid credentials that were simply
+        never given a chance to log in.
+        """
+        if self._username and not self._auth_header():
+            self.login()
+
     # -------------------------------------------------------------- requests
 
     def _raw_request(
@@ -259,9 +275,7 @@ class Client:
         body: Any = None,
         query: dict[str, str] | None = None,
     ) -> Any:
-        # Lazy first login for credentialed clients.
-        if self._username and not self._auth_header():
-            self.login()
+        self._ensure_login()
         try:
             return self._raw_request(method, path, body=body, query=query)
         except APIError as exc:
@@ -347,6 +361,10 @@ class Client:
         from brokoli.compatibility import preflight_server_compatibility
         from brokoli.validation import validate_pipeline
 
+        # preflight/validate read _auth_header() directly rather than
+        # going through _request, so a credentialed client that hasn't
+        # made any other call yet needs its lazy login triggered here too.
+        self._ensure_login()
         preflight_server_compatibility(
             [pipeline],
             self.server,
