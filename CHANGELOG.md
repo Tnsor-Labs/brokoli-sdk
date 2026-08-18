@@ -5,6 +5,25 @@ format is loosely [Keep a Changelog](https://keepachangelog.com/); the
 project is pre-1.0, so a breaking change can land in a minor release —
 those are called out explicitly.
 
+## Unreleased
+
+### Added
+
+- **Observability reads** (#57 item 7). `client.dlq(pipeline, include_resolved=, limit=)`
+  and `Run.node_preview(node_id)` — the dead-letter queue and per-node
+  output sample the CLI already exposes, now importable. Cancel/retry
+  verification scripts assert DLQ emptiness and spot-check row values
+  without exporting through a sink first.
+
+### Fixed
+
+- **`Client.deploy()` on a fresh credentialed client.** `preflight_server_compatibility`
+  and `validate_pipeline` read the auth header directly instead of going
+  through `_request`, so a `username`/`password` client whose first-ever
+  call was `deploy()` sent those two requests unauthenticated and failed
+  with a misleading "verify your token" error despite valid credentials.
+  Lazy login now triggers before either call.
+
 ## 0.4.0 — 2026-08-15
 
 ### Added

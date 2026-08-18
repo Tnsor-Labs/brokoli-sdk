@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -46,6 +47,9 @@ class FakeBrokoli(BaseHTTPRequestHandler):
     deployed: list = []
     logs_shape = "list"  # or "wrapped"
     log_entries: list = []
+    dlq_entries: dict = {}  # pipeline id -> list of entries
+    last_dlq_query: dict = {}
+    previews: dict = {}  # "run_id/node_id" -> {"columns": ..., "rows": ...}
 
     def log_message(self, *args):  # noqa: D102 - silence test output
         pass
@@ -117,6 +121,11 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             return self._json(401, {"error": "unauthenticated"})
         if self.path == "/api/capabilities":
             return self._json(200, {"supported_ir_versions": ["2.0"]})
+        if self.path.startswith("/api/pipelines/") and "/dlq" in self.path:
+            pipeline_id = self.path.split("/")[3]
+            parsed = urllib.parse.urlsplit(self.path)
+            cls.last_dlq_query = dict(urllib.parse.parse_qsl(parsed.query))
+            return self._json(200, cls.dlq_entries.get(pipeline_id, []))
         if self.path.startswith("/api/pipelines"):
             if not cls.use_cursor_shape:
                 return self._json(200, cls.pipelines_flat)
@@ -136,6 +145,17 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             if cls.logs_shape == "wrapped":
                 return self._json(200, {"logs": entries})
             return self._json(200, entries)
+        if (
+            self.path.startswith("/api/runs/")
+            and "/nodes/" in self.path
+            and self.path.endswith("/preview")
+        ):
+            parts = self.path.split("/")
+            run_id, node_id = parts[3], parts[5]
+            preview = cls.previews.get(f"{run_id}/{node_id}")
+            if preview is None:
+                return self._json(404, {"error": "no preview available"})
+            return self._json(200, preview)
         if self.path.startswith("/api/runs/"):
             run_id = self.path.split("/")[3]
             status = cls.run_statuses.get(run_id)
@@ -163,6 +183,9 @@ def server():
     FakeBrokoli.deployed = []
     FakeBrokoli.logs_shape = "list"
     FakeBrokoli.log_entries = []
+    FakeBrokoli.dlq_entries = {}
+    FakeBrokoli.last_dlq_query = {}
+    FakeBrokoli.previews = {}
 
     httpd = HTTPServer(("127.0.0.1", 0), FakeBrokoli)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -326,6 +349,48 @@ class TestRuns:
         with ThreadPoolExecutor(max_workers=8) as pool:
             runs = list(pool.map(lambda _: client.run("orders"), range(16)))
         assert len({r.id for r in runs}) == 16
+
+    def test_node_preview(self, server):
+        client = self._client(server)
+        run = client.run("orders")
+        FakeBrokoli.previews[f"{run.id}/aggregate"] = {
+            "columns": ["region", "total"],
+            "rows": [{"region": "us", "total": 42}],
+        }
+        preview = run.node_preview("aggregate")
+        assert preview["columns"] == ["region", "total"]
+        assert preview["rows"][0]["total"] == 42
+
+    def test_node_preview_unavailable_is_404(self, server):
+        client = self._client(server)
+        run = client.run("orders")
+        with pytest.raises(APIError) as exc_info:
+            run.node_preview("never-ran")
+        assert exc_info.value.status == 404
+
+
+class TestObservability:
+    def _client(self, server):
+        FakeBrokoli.use_cursor_shape = False
+        FakeBrokoli.pipelines_flat = PIPES
+        return _static_client(server)
+
+    def test_dlq_resolves_pipeline_and_returns_entries(self, server):
+        FakeBrokoli.dlq_entries["uuid-1"] = [
+            {"id": "dlq-1", "node_id": "sink", "error": "constraint violation"}
+        ]
+        client = self._client(server)
+        entries = client.dlq("orders")
+        assert entries[0]["error"] == "constraint violation"
+
+    def test_dlq_empty_by_default(self, server):
+        client = self._client(server)
+        assert client.dlq("orders") == []
+
+    def test_dlq_query_params(self, server):
+        client = self._client(server)
+        client.dlq("orders", include_resolved=True, limit=10)
+        assert FakeBrokoli.last_dlq_query == {"limit": "10", "include_resolved": "true"}
 
 
 class TestDeploy:

@@ -418,6 +418,33 @@ class Client:
         """Wrap an existing run id (from a log, another process, the UI)."""
         return Run(self, run_id)
 
+    # ----------------------------------------------------------- observability
+
+    def dlq(
+        self,
+        pipeline: Any,
+        *,
+        include_resolved: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Dead-letter queue entries for ``pipeline``.
+
+        ``pipeline`` resolves the same way ``run()`` does. Verification
+        scripts use this to assert a clean DLQ after a cancel/retry
+        matrix — nothing silently fell through to it.
+        """
+        identifier = pipeline
+        if not isinstance(pipeline, str):
+            identifier = getattr(pipeline, "pipeline_id", "") or getattr(pipeline, "name", "")
+        remote = self.pipeline(str(identifier))
+        query = {"limit": str(limit)}
+        if include_resolved:
+            query["include_resolved"] = "true"
+        payload = self._request("GET", f"/api/pipelines/{remote['id']}/dlq", query=query)
+        if not isinstance(payload, list):
+            raise APIError(f"malformed DLQ response for {remote['id']}: {payload!r}")
+        return [e for e in payload if isinstance(e, dict)]
+
 
 class Run:
     """Handle to one run: poll it, wait on it, cancel it, read its logs.
@@ -492,3 +519,16 @@ class Run:
         if entries is None:
             raise APIError(f"malformed logs response for {self.id}: {payload!r}")
         return [e for e in entries if isinstance(e, dict)]
+
+    def node_preview(self, node_id: str) -> dict[str, Any]:
+        """Sample rows and columns from ``node_id``'s output in this run.
+
+        For spot-checking results (row values, whether a column landed)
+        without exporting through a sink first. Raises ``APIError`` (404)
+        if the node has no preview available — it may not have run yet,
+        or preview capture may be disabled for it.
+        """
+        payload = self.client._request("GET", f"/api/runs/{self.id}/nodes/{node_id}/preview")
+        if not isinstance(payload, dict) or "columns" not in payload or "rows" not in payload:
+            raise APIError(f"malformed preview response for {self.id}/{node_id}: {payload!r}")
+        return payload
