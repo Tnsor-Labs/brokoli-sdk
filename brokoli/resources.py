@@ -55,9 +55,7 @@ class ResourceRef:
 
     def __init__(self, name: str) -> None:
         if not isinstance(name, str) or not name:
-            raise ValueError(
-                f"{type(self).__name__} name must be a non-empty string"
-            )
+            raise ValueError(f"{type(self).__name__} name must be a non-empty string")
         if not _NAME_RE.match(name):
             raise ValueError(
                 f"{type(self).__name__} name {name!r} may contain only letters, "

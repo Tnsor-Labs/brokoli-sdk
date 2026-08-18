@@ -91,13 +91,16 @@ def normalize_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
 
 def canonical_json(value: Any) -> str:
     """Render JSON canonically with exactly one trailing newline."""
-    return json.dumps(
-        value,
-        indent=2,
-        sort_keys=True,
-        ensure_ascii=False,
-        allow_nan=False,
-    ) + "\n"
+    return (
+        json.dumps(
+            value,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
+    )
 
 
 def render_ir(ir: Mapping[str, Any]) -> str:
