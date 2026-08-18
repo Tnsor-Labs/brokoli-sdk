@@ -15,6 +15,34 @@ those are called out explicitly.
   verification scripts assert DLQ emptiness and spot-check row values
   without exporting through a sink first.
 
+- **Async run-ops client** (#57 item 8, `brokoli.AsyncClient`/`AsyncRun`).
+  A parallel async counterpart to `Client`/`Run` -- not a background-
+  thread wrapper around them. Every REST method delegates to a plain
+  `Client` via `asyncio.to_thread` (one tested HTTP implementation, not
+  two); `AsyncRun.watch()`/`.wait()` are genuinely async-native, backed
+  by a real WebSocket subscription against the server's SODP endpoint
+  for near-instant run-completion notice instead of a fixed poll
+  interval.
+  - `AsyncClient(server, api_key=...)` / `.from_env(...)` -- same
+    construction as `Client`.
+  - `client.run(pipeline, params=...) -> AsyncRun`;
+    `AsyncRun.watch(poll_interval=...)` (an async generator yielding the
+    run's detail on every status change) and `.wait(timeout,
+    poll_interval, raise_on_failure=...)`, `.status()`, `.node_runs()`,
+    `.cancel()`, `.logs(...)`.
+  - The SODP subscription is a signal to refetch, not the value
+    returned -- every yield is a real REST `detail()` call, since the
+    pushed state is a narrower rollup than the full run object. A REST
+    poll runs alongside the subscription regardless, because a `blocked`
+    run (failed cross-pipeline dependency check) never emits an event at
+    all and would otherwise wait forever.
+  - The push path requires the new `watch` extra: `pip install
+    "brokoli[watch]"` (installs `sodp-client`). Without it, or if the
+    connection doesn't complete within a bounded timeout, `watch()`/
+    `wait()` still work correctly -- they fall back to plain polling,
+    exactly like the sync `Run.wait()`. Every other `AsyncClient` method
+    needs no extra dependency either way.
+
 ### Fixed
 
 - **`Client.deploy()` on a fresh credentialed client.** `preflight_server_compatibility`

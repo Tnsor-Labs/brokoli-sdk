@@ -79,7 +79,8 @@ def _validate_source_api(name: str, config: dict[str, Any], result: ValidationRe
     response = config.get("response", "dataset")
     if response not in VALID_SOURCE_API_RESPONSES:
         result.add_error(
-            name, "response",
+            name,
+            "response",
             f"Source API 'response' must be one of {sorted(VALID_SOURCE_API_RESPONSES)}, "
             f"got {response!r}",
         )
@@ -88,7 +89,8 @@ def _validate_source_api(name: str, config: dict[str, Any], result: ValidationRe
     value_path = config.get("value_path")
     if records is not None and value_path is not None:
         result.add_error(
-            name, "records",
+            name,
+            "records",
             "Source API cannot set both 'records' and 'value_path' — "
             "'records' extracts a list for response='dataset', 'value_path' "
             "extracts a single value for response='scalar'; use only one",
@@ -98,13 +100,14 @@ def _validate_source_api(name: str, config: dict[str, Any], result: ValidationRe
     if pagination is not None:
         if response != "dataset":
             result.add_error(
-                name, "pagination",
-                f"Source API 'pagination' requires response='dataset' "
-                f"(got response={response!r})",
+                name,
+                "pagination",
+                f"Source API 'pagination' requires response='dataset' (got response={response!r})",
             )
         if not isinstance(pagination, dict):
             result.add_error(
-                name, "pagination",
+                name,
+                "pagination",
                 "Source API 'pagination' must be a dict-shaped config "
                 "(build it with brokoli.pagination.offset_pages(...) or similar)",
             )
@@ -112,7 +115,8 @@ def _validate_source_api(name: str, config: dict[str, Any], result: ValidationRe
             strategy = pagination.get("strategy")
             if strategy not in VALID_PAGINATION_STRATEGIES:
                 result.add_error(
-                    name, "pagination",
+                    name,
+                    "pagination",
                     f"Unknown pagination strategy {strategy!r}. Must be one of "
                     f"{sorted(VALID_PAGINATION_STRATEGIES)}",
                 )
@@ -125,7 +129,9 @@ def _validate_source_file(name: str, config: dict[str, Any], result: ValidationR
 
 def _validate_transform(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("rules"):
-        result.add_warning(name, "rules", "Transform has no rules — will pass data through unchanged")
+        result.add_warning(
+            name, "rules", "Transform has no rules — will pass data through unchanged"
+        )
 
 
 def _validate_quality_check(name: str, config: dict[str, Any], result: ValidationResult) -> None:
@@ -143,7 +149,8 @@ def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) 
     expansion = config.get("expansion")
     if expansion is not None and not expansion.get("over"):
         result.add_error(
-            name, "expansion",
+            name,
+            "expansion",
             "expand() requires at least one keyword mapping a task "
             "parameter to a CollectionRef, e.g. .expand(file=files)",
         )
@@ -152,12 +159,15 @@ def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) 
 def _validate_union(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if config.get("mode") != "union":
         result.add_error(
-            name, "mode",
+            name,
+            "mode",
             f"Union node currently only supports mode='union', got {config.get('mode')!r}",
         )
 
 
-def _validate_dataset_transform(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+def _validate_dataset_transform(
+    name: str, config: dict[str, Any], result: ValidationResult
+) -> None:
     """Shared validator for the ``dataset_map``/``dataset_filter`` partition-transform nodes."""
     function = config.get("function")
     if not isinstance(function, dict) or not function.get("name"):
@@ -187,7 +197,8 @@ def _validate_enum(name, config, key, allowed, result):
     value = config.get(key)
     if value is not None and value != "" and value not in allowed:
         result.add_error(
-            name, key,
+            name,
+            key,
             f"'{key}' value {value!r} is not one of {sorted(allowed)} -- the "
             "server would silently coerce it rather than honor it",
         )
@@ -201,7 +212,8 @@ def _validate_sink_db(name: str, config: dict[str, Any], result: ValidationResul
     _validate_enum(name, config, "mode", _SINK_DB_MODES, result)
     if config.get("mode") == "upsert" and not config.get("key_columns"):
         result.add_error(
-            name, "key_columns",
+            name,
+            "key_columns",
             "Sink DB mode='upsert' requires 'key_columns' -- the column(s) a "
             "row collides on, e.g. key_columns=['id']",
         )
@@ -220,9 +232,7 @@ def _validate_sink_api(name: str, config: dict[str, Any], result: ValidationResu
 
 def _validate_join(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("left_key") and not config.get("right_key"):
-        result.add_error(
-            name, "on", "Join requires join keys (left_key=... / right_key=...)"
-        )
+        result.add_error(name, "on", "Join requires join keys (left_key=... / right_key=...)")
     _validate_enum(name, config, "join_type", _JOIN_TYPES, result)
 
 
@@ -233,7 +243,8 @@ def _validate_dbt(name: str, config: dict[str, Any], result: ValidationResult) -
         return
     if command not in ALLOWED_DBT_COMMANDS:
         result.add_error(
-            name, "command",
+            name,
+            "command",
             f"dbt command '{command}' is not allowed. Must be one of: {', '.join(sorted(ALLOWED_DBT_COMMANDS))}",
         )
 
@@ -252,13 +263,15 @@ def _validate_migrate(name: str, config: dict[str, Any], result: ValidationResul
     has_conns = config.get("source_conn_id") and config.get("dest_conn_id")
     if not has_uris and not has_conns:
         result.add_error(
-            name, "conn",
+            name,
+            "conn",
             "Migrate node requires 'source_uri' + 'target_uri' or 'source_conn_id' + 'target_conn_id'",
         )
     _validate_enum(name, config, "mode", _MIGRATE_MODES, result)
     if config.get("mode") == "upsert" and not config.get("key_columns"):
         result.add_error(
-            name, "key_columns",
+            name,
+            "key_columns",
             "Migrate mode='upsert' requires 'key_columns' -- the column(s) a "
             "row collides on, e.g. key_columns=['id']",
         )
@@ -348,14 +361,17 @@ def validate_pipeline(
 
     if not has_source:
         result.add_warning(
-            "", "capabilities",
+            "",
+            "capabilities",
             "Pipeline has no source node — nothing produces data for downstream nodes to consume",
         )
 
     # Edge validation
     for edge in data.get("edges", []):
         if edge["from"] not in node_ids:
-            result.add_error("", "edge", f"Edge references unknown source node: {edge['from'][:12]}")
+            result.add_error(
+                "", "edge", f"Edge references unknown source node: {edge['from'][:12]}"
+            )
         if edge["to"] not in node_ids:
             result.add_error("", "edge", f"Edge references unknown target node: {edge['to'][:12]}")
 
@@ -375,19 +391,22 @@ def validate_pipeline(
     for nid, ntype in types_by_id.items():
         if ntype == "join" and indegree_by_node[nid] != 2:
             result.add_error(
-                names_by_id[nid], "inputs",
+                names_by_id[nid],
+                "inputs",
                 f"join requires exactly 2 inputs, got {indegree_by_node[nid]}",
             )
         if ntype == "condition" and indegree_by_node[nid] != 1:
             result.add_error(
-                names_by_id[nid], "inputs",
+                names_by_id[nid],
+                "inputs",
                 f"condition requires exactly 1 input, got {indegree_by_node[nid]}",
             )
     if len(node_ids) > 1:
         for nid in node_ids:
             if nid not in touched and types_by_id.get(nid) != "migrate":
                 result.add_error(
-                    names_by_id[nid], "edges",
+                    names_by_id[nid],
+                    "edges",
                     "node is disconnected -- the server rejects this at save",
                 )
 
@@ -413,7 +432,8 @@ def validate_pipeline(
     if visited < len(node_ids):
         members = sorted(nid for nid, deg in indegree.items() if deg > 0)
         result.add_error(
-            "", "edges",
+            "",
+            "edges",
             "Pipeline contains a cycle involving: " + ", ".join(members),
         )
 
@@ -464,13 +484,15 @@ def _validate_connections(
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", str(exc))
         result.add_warning(
-            "", "server",
+            "",
+            "server",
             f"Could not connect to {server_url}: {reason} — skipping conn_id validation",
         )
         return
     except Exception as exc:
         result.add_warning(
-            "", "server",
+            "",
+            "server",
             f"Error fetching connections from {server_url}: {exc} — skipping conn_id validation",
         )
         return
@@ -478,6 +500,7 @@ def _validate_connections(
     for cid, node_name in conn_ids_used.items():
         if cid not in server_conn_ids:
             result.add_error(
-                node_name, "conn_id",
+                node_name,
+                "conn_id",
                 f"Connection '{cid}' does not exist on the server. Create it in Connections page first.",
             )

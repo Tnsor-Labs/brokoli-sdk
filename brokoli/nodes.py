@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Optional, Any
+from typing import Optional, Any, TypeVar
 
 from brokoli.exceptions import ContextError, PipelineError
 from brokoli.pagination import PaginationStrategy
 from brokoli.resources import ResourceRef
 from brokoli.parsing import parse_quality_rule
 from brokoli.pipeline import (
-    Pipeline, NodeRef, ConditionRef, _MultiRef,
-    ArtifactRef, DatasetRef, ScalarRef,
+    Pipeline,
+    NodeRef,
+    ConditionRef,
+    _MultiRef,
+    ArtifactRef,
+    DatasetRef,
+    ScalarRef,
     _build_union_node,
 )
+
 # UNSET is defined in its own module (not here) so brokoli.pipeline can use
 # it too without a circular import; imported here so existing call sites
 # below and ``from brokoli.nodes import UNSET`` keep working unchanged.
@@ -22,6 +28,7 @@ from brokoli.sentinel import UNSET
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _current_pipeline() -> Pipeline:
     """Return the active pipeline or raise ContextError."""
@@ -97,14 +104,17 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+_RefT = TypeVar("_RefT", bound=NodeRef)
+
+
 def _register_node(
     node_type: str,
     name: str,
     config: dict,
     *inputs: NodeRef,
-    ref_cls: type = NodeRef,
+    ref_cls: type[_RefT] = NodeRef,  # type: ignore[assignment]
     node_key: Optional[str] = None,
-) -> NodeRef:
+) -> _RefT:
     """Register a node in the current pipeline and connect inputs.
 
     Args:
@@ -147,6 +157,7 @@ def _input_args(input: Optional[NodeRef]) -> tuple[NodeRef, ...]:
 # Sources
 # ===================================================================
 
+
 def source_db(
     name: str,
     query: str = "",
@@ -177,9 +188,7 @@ def source_db(
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
     config = _build_config({"query": query}, optional)
-    return _register_node(
-        "source_db", name, config, ref_cls=DatasetRef, node_key=node_key
-    )
+    return _register_node("source_db", name, config, ref_cls=DatasetRef, node_key=node_key)
 
 
 def source_api(
@@ -307,9 +316,10 @@ def source_api(
         "scalar": ScalarRef,
         "artifact": ArtifactRef,
     }.get(response, DatasetRef)
-    return _register_node(
-        "source_api", name, config, ref_cls=ref_cls, node_key=node_key
-    )
+    # ref_cls is picked at runtime from a dict, so mypy sees a union of
+    # classes rather than the single type _register_node's TypeVar needs --
+    # the union is exactly this function's own declared return type.
+    return _register_node("source_api", name, config, ref_cls=ref_cls, node_key=node_key)  # type: ignore[return-value]
 
 
 def source_file(
@@ -332,14 +342,13 @@ def source_file(
     optional: dict = {}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"path": path, "format": format}, optional)
-    return _register_node(
-        "source_file", name, config, ref_cls=DatasetRef, node_key=node_key
-    )
+    return _register_node("source_file", name, config, ref_cls=DatasetRef, node_key=node_key)
 
 
 # ===================================================================
 # Processing
 # ===================================================================
+
 
 def _parse_transform_rules(rules: list) -> list:
     """Convert a list of transform rules (strings or dicts) to rule objects.
@@ -449,8 +458,12 @@ def transform(
     _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 
     return _register_node(
-        "transform", name, config, *_input_args(input),
-        ref_cls=DatasetRef, node_key=node_key,
+        "transform",
+        name,
+        config,
+        *_input_args(input),
+        ref_cls=DatasetRef,
+        node_key=node_key,
     )
 
 
@@ -492,8 +505,7 @@ def join(
     """
     if on and (left_key or right_key):
         raise PipelineError(
-            f"join({name!r}, ...): pass either on=... or "
-            "left_key=/right_key=..., not both."
+            f"join({name!r}, ...): pass either on=... or left_key=/right_key=..., not both."
         )
 
     if left_key or right_key:
@@ -523,9 +535,7 @@ def join(
         args.append(left)
     if right is not None:
         args.append(right)
-    return _register_node(
-        "join", name, config, *args, ref_cls=DatasetRef, node_key=node_key
-    )
+    return _register_node("join", name, config, *args, ref_cls=DatasetRef, node_key=node_key)
 
 
 def _parse_quality_rules(rules: list) -> list:
@@ -578,9 +588,7 @@ def quality_check(
         config["rules"] = _parse_quality_rules(list(rules))
     _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 
-    return _register_node(
-        "quality_check", name, config, *_input_args(input), node_key=node_key
-    )
+    return _register_node("quality_check", name, config, *_input_args(input), node_key=node_key)
 
 
 def code(
@@ -615,14 +623,13 @@ def code(
     optional: dict = {"python_path": python_path}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"language": language, "script": script}, optional)
-    return _register_node(
-        "code", name, config, *_input_args(input), node_key=node_key
-    )
+    return _register_node("code", name, config, *_input_args(input), node_key=node_key)
 
 
 # ===================================================================
 # Sinks
 # ===================================================================
+
 
 def sink_db(
     name: str,
@@ -660,17 +667,13 @@ def sink_db(
         "conn_id": conn_id,
         "uri": uri,
         "key_columns": (
-            list(key_columns)
-            if key_columns is not UNSET and key_columns is not None
-            else UNSET
+            list(key_columns) if key_columns is not UNSET and key_columns is not None else UNSET
         ),
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
     config = _build_config({"table": table, "mode": mode}, optional)
-    return _register_node(
-        "sink_db", name, config, *_input_args(input), node_key=node_key
-    )
+    return _register_node("sink_db", name, config, *_input_args(input), node_key=node_key)
 
 
 def sink_file(
@@ -697,9 +700,7 @@ def sink_file(
     optional: dict = {"compress": compress}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"path": path, "format": format}, optional)
-    return _register_node(
-        "sink_file", name, config, *_input_args(input), node_key=node_key
-    )
+    return _register_node("sink_file", name, config, *_input_args(input), node_key=node_key)
 
 
 def sink_api(
@@ -754,14 +755,13 @@ def sink_api(
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"url": url, "method": method}, optional)
-    return _register_node(
-        "sink_api", name, config, *_input_args(input), node_key=node_key
-    )
+    return _register_node("sink_api", name, config, *_input_args(input), node_key=node_key)
 
 
 # ===================================================================
 # Flow control
 # ===================================================================
+
 
 def migrate(
     name: str,
@@ -812,9 +812,7 @@ def migrate(
         "source_conn_id": source_conn_id,
         "dest_conn_id": target_conn_id,
         "key_columns": (
-            list(key_columns)
-            if key_columns is not UNSET and key_columns is not None
-            else UNSET
+            list(key_columns) if key_columns is not UNSET and key_columns is not None else UNSET
         ),
         "dialect": dialect,
         "chunk_size": chunk_size,
@@ -832,9 +830,7 @@ def migrate(
         },
         optional,
     )
-    return _register_node(
-        "migrate", name, config, ref_cls=DatasetRef, node_key=node_key
-    )
+    return _register_node("migrate", name, config, ref_cls=DatasetRef, node_key=node_key)
 
 
 def dbt(
@@ -875,8 +871,12 @@ def dbt(
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"command": command}, optional)
     return _register_node(
-        "dbt", name, config, *_input_args(input),
-        ref_cls=DatasetRef, node_key=node_key,
+        "dbt",
+        name,
+        config,
+        *_input_args(input),
+        ref_cls=DatasetRef,
+        node_key=node_key,
     )
 
 
@@ -913,9 +913,7 @@ def notify(
         {"notify_type": notify_type, "webhook_url": webhook_url},
         optional,
     )
-    return _register_node(
-        "notify", name, config, *_input_args(input), node_key=node_key
-    )
+    return _register_node("notify", name, config, *_input_args(input), node_key=node_key)
 
 
 def condition_node(
@@ -937,8 +935,12 @@ def condition_node(
     """
     config = _build_config({"expression": expression}, {})
     return _register_node(
-        "condition", name, config, *_input_args(input),
-        ref_cls=ConditionRef, node_key=node_key,
+        "condition",
+        name,
+        config,
+        *_input_args(input),
+        ref_cls=ConditionRef,
+        node_key=node_key,
     )
 
 
@@ -967,9 +969,7 @@ def parallel(*nodes: NodeRef) -> _MultiRef | NodeRef:
     return refs[0] if refs else nodes[0]
 
 
-def union(
-    name: str, *refs: NodeRef, node_key: Optional[str] = None
-) -> DatasetRef:
+def union(name: str, *refs: NodeRef, node_key: Optional[str] = None) -> DatasetRef:
     """Combine multiple dataset/collection refs' manifests into one dataset.
 
     Compiles to a single ``union`` IR node (capabilities: ``compute``,

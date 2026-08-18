@@ -34,6 +34,7 @@ from brokoli.sentinel import UNSET
 # @task
 # ---------------------------------------------------------------------------
 
+
 def task(
     name_or_func: str | Callable | None = None,
     *,
@@ -111,9 +112,7 @@ def task(
     def decorator(func: Callable) -> _TaskWrapper:
         task_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@task")
-        return _TaskWrapper(
-            func, task_name, pipeline, config, package=package, node_key=node_key
-        )
+        return _TaskWrapper(func, task_name, pipeline, config, package=package, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -125,6 +124,7 @@ def task(
 # ---------------------------------------------------------------------------
 # @condition
 # ---------------------------------------------------------------------------
+
 
 def condition(
     name_or_func: str | Callable | None = None,
@@ -138,6 +138,7 @@ def condition(
     runtime IR cannot distinguish predicate input from the unchanged branch
     payload. Use ``condition_node(...).when()/.otherwise()`` instead.
     """
+
     def decorator(func: Callable) -> _ConditionWrapper:
         cond_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@condition")
@@ -153,6 +154,7 @@ def condition(
 # ---------------------------------------------------------------------------
 # @source
 # ---------------------------------------------------------------------------
+
 
 def source(
     name_or_func: str | Callable | None = None,
@@ -199,6 +201,7 @@ def source(
 # ---------------------------------------------------------------------------
 # @sink
 # ---------------------------------------------------------------------------
+
 
 def sink(
     name_or_func: str | Callable | None = None,
@@ -250,6 +253,7 @@ def sink(
 # @filter
 # ---------------------------------------------------------------------------
 
+
 def filter(
     name_or_func: str | Callable | None = None,
     *,
@@ -268,6 +272,7 @@ def filter(
 
         source >> active_users >> sink
     """
+
     def decorator(func: Callable) -> _FilterWrapper:
         filt_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@filter")
@@ -283,6 +288,7 @@ def filter(
 # ---------------------------------------------------------------------------
 # @map
 # ---------------------------------------------------------------------------
+
 
 def map(
     name_or_func: str | Callable | None = None,
@@ -304,6 +310,7 @@ def map(
 
         source >> enrich >> sink
     """
+
     def decorator(func: Callable) -> _MapWrapper:
         map_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@map")
@@ -319,6 +326,7 @@ def map(
 # ---------------------------------------------------------------------------
 # @validate
 # ---------------------------------------------------------------------------
+
 
 def validate(
     name_or_func: str | Callable | None = None,
@@ -347,12 +355,11 @@ def validate(
         def row_count_check(rows):
             return len(rows) > 100, f"Only {len(rows)} rows"
     """
+
     def decorator(func: Callable) -> _ValidateWrapper:
         val_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@validate")
-        return _ValidateWrapper(
-            func, val_name, pipeline, on_failure, node_key=node_key
-        )
+        return _ValidateWrapper(func, val_name, pipeline, on_failure, node_key=node_key)
 
     if callable(name_or_func):
         func = name_or_func
@@ -364,6 +371,7 @@ def validate(
 # ---------------------------------------------------------------------------
 # @sensor
 # ---------------------------------------------------------------------------
+
 
 def sensor(
     name_or_func: str | Callable | None = None,
@@ -397,6 +405,7 @@ def sensor(
 
         wait_for_export >> process >> sink
     """
+
     def decorator(func: Callable) -> _SensorWrapper:
         sensor_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@sensor")
@@ -414,6 +423,7 @@ def sensor(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _require_pipeline(decorator_name: str) -> Pipeline:
     """Return the current pipeline or raise a clear error."""

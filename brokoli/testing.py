@@ -59,18 +59,14 @@ class Graph:
         self._id_by_name: dict[str, str] = {}
         for node in ir["nodes"]:
             self._id_by_name.setdefault(node["name"], node["id"])
-        self._raw_edges: list[tuple[str, str]] = [
-            (e["from"], e["to"]) for e in ir.get("edges", [])
-        ]
+        self._raw_edges: list[tuple[str, str]] = [(e["from"], e["to"]) for e in ir.get("edges", [])]
 
     def _resolve(self, key: str) -> str:
         if key in self._nodes:
             return key
         if key in self._id_by_name:
             return self._id_by_name[key]
-        raise KeyError(
-            f"no node named or id'd {key!r}; nodes are {sorted(self.node_names)}"
-        )
+        raise KeyError(f"no node named or id'd {key!r}; nodes are {sorted(self.node_names)}")
 
     @property
     def node_names(self) -> list[str]:
@@ -135,9 +131,7 @@ class Graph:
     def assert_edge(self, src: str, dst: str) -> None:
         """Assert a direct edge ``src -> dst`` (by name) exists."""
         if not self.has_edge(src, dst):
-            raise AssertionError(
-                f"expected edge {src!r} -> {dst!r}; edges are {self.edges}"
-            )
+            raise AssertionError(f"expected edge {src!r} -> {dst!r}; edges are {self.edges}")
 
 
 def graph(pipeline: Pipeline) -> Graph:
@@ -157,8 +151,7 @@ def run_task(task: Any, *args: Any, **kwargs: Any) -> Any:
     fn = getattr(task, "__wrapped__", task)
     if not callable(fn):
         raise TypeError(
-            "run_task expected a callable or a brokoli task wrapper, got "
-            f"{type(task).__name__}"
+            f"run_task expected a callable or a brokoli task wrapper, got {type(task).__name__}"
         )
     return fn(*args, **kwargs)
 
@@ -188,7 +181,9 @@ def assert_stable_ir(builder: Callable[[], Pipeline]) -> None:
         raise AssertionError(
             "pipeline IR is not stable across rebuilds:\n"
             + diff_ir(
-                second, first,
-                local_label="rebuild-2", remote_label="rebuild-1",
+                second,
+                first,
+                local_label="rebuild-2",
+                remote_label="rebuild-1",
             )
         )

@@ -93,9 +93,7 @@ def _resolve_target(
         envs = _load_environments()
         if env_name not in envs:
             known = ", ".join(sorted(envs)) or "none configured"
-            raise DeployError(
-                operation, 0, f"unknown environment {env_name!r} (have: {known})"
-            )
+            raise DeployError(operation, 0, f"unknown environment {env_name!r} (have: {known})")
         env_cfg = envs[env_name] or {}
         if server is None:
             env_server = env_cfg.get("server")
@@ -103,9 +101,7 @@ def _resolve_target(
     if server is None:
         server = default_server
     if not server:
-        raise DeployError(
-            operation, 0, "no server: pass --server or --env <name>"
-        )
+        raise DeployError(operation, 0, "no server: pass --server or --env <name>")
     auth = _auth_header_from_args(args)
     if not auth and env_cfg.get("token_env"):
         token = os.getenv(str(env_cfg["token_env"]), "")
@@ -194,7 +190,8 @@ def load_pipeline_from_file(filepath: str) -> list[Any]:
     pipelines = [obj for obj in vars(module).values() if isinstance(obj, Pipeline)]
     if not pipelines:
         raise DeployError(
-            filepath, 0,
+            filepath,
+            0,
             f"No Pipeline found in {filepath}. Use: with Pipeline('name') as p: ...",
         )
 
@@ -226,7 +223,9 @@ def _upsert_pipeline(
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        url, data=data, method=method,
+        url,
+        data=data,
+        method=method,
         headers=_make_headers(auth_header, "application/json"),
     )
     try:
@@ -251,9 +250,7 @@ def deploy(args: argparse.Namespace) -> None:
     """Deploy pipeline(s) to a Brokoli server."""
     from brokoli.validation import validate_pipeline
 
-    server, auth_header = _resolve_target(
-        args, "deploy", default_server="http://localhost:8080"
-    )
+    server, auth_header = _resolve_target(args, "deploy", default_server="http://localhost:8080")
     skip_validation: bool = getattr(args, "skip_validation", False)
     allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
     pipelines: list[Any] = []
@@ -274,9 +271,7 @@ def deploy(args: argparse.Namespace) -> None:
     for pipeline in pipelines:
         pipeline_id = getattr(pipeline, "pipeline_id", "")
         if pipeline_id and pipeline_id in local_ids:
-            raise DeployError(
-                pipeline.name, 0, f"Duplicate local pipeline_id {pipeline_id!r}"
-            )
+            raise DeployError(pipeline.name, 0, f"Duplicate local pipeline_id {pipeline_id!r}")
         if pipeline_id:
             local_ids.add(pipeline_id)
 
@@ -302,9 +297,7 @@ def validate_cmd(args: argparse.Namespace) -> None:
     """Validate pipeline(s) without deploying."""
     from brokoli.validation import validate_pipeline
 
-    server, auth_header = _resolve_target(
-        args, "validate", default_server="http://localhost:8080"
-    )
+    server, auth_header = _resolve_target(args, "validate", default_server="http://localhost:8080")
     allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
     pipelines: list[Any] = []
 
@@ -416,7 +409,9 @@ def _post_json(
     """
     data = json.dumps(body or {}).encode()
     request = urllib.request.Request(
-        url, data=data, method="POST",
+        url,
+        data=data,
+        method="POST",
         headers=_make_headers(auth_header, "application/json"),
     )
     try:
@@ -453,6 +448,9 @@ def _list_remote_pipelines(
             operation,
         )
 
+        items: list[Any] | None
+        has_next: bool | None
+        cursor: str | None
         if isinstance(payload, list):
             items = payload
             has_next = False
@@ -463,11 +461,15 @@ def _list_remote_pipelines(
             cursor = payload.get("cursor")
             if not isinstance(items, list) or not isinstance(has_next, bool):
                 raise DeployError(
-                    operation, 0, "Malformed pipeline list response: expected items and has_next",
+                    operation,
+                    0,
+                    "Malformed pipeline list response: expected items and has_next",
                 )
         else:
             raise DeployError(
-                operation, 0, "Malformed pipeline list response: expected a list or object",
+                operation,
+                0,
+                "Malformed pipeline list response: expected a list or object",
             )
 
         if not all(isinstance(item, dict) for item in items):
@@ -483,31 +485,24 @@ def _list_remote_pipelines(
 
 
 def _match_remote_pipeline(
-    pipeline: Any, remote: list[dict[str, Any]],
+    pipeline: Any,
+    remote: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Match by exact logical ID, falling back to exact name."""
     pipeline_id = getattr(pipeline, "pipeline_id", "")
-    id_matches = [
-        item for item in remote
-        if pipeline_id and item.get("pipeline_id") == pipeline_id
-    ]
+    id_matches = [item for item in remote if pipeline_id and item.get("pipeline_id") == pipeline_id]
     name_matches = [item for item in remote if item.get("name") == pipeline.name]
     conflicting_name_matches = [
         item for item in name_matches if item.get("pipeline_id") not in (None, "")
     ]
     if not id_matches and conflicting_name_matches:
-        conflicting_ids = sorted(
-            str(item["pipeline_id"]) for item in conflicting_name_matches
-        )
+        conflicting_ids = sorted(str(item["pipeline_id"]) for item in conflicting_name_matches)
         raise DeployError(
             pipeline.name,
             0,
-            "Remote name matches a different pipeline_id: "
-            + ", ".join(conflicting_ids),
+            "Remote name matches a different pipeline_id: " + ", ".join(conflicting_ids),
         )
-    matches = id_matches or [
-        item for item in name_matches if item.get("pipeline_id") in (None, "")
-    ]
+    matches = id_matches or [item for item in name_matches if item.get("pipeline_id") in (None, "")]
     if len(matches) > 1:
         raise DeployError(
             pipeline.name,
@@ -528,9 +523,7 @@ def _match_remote_pipelines(
     for pipeline in pipelines:
         pipeline_id = getattr(pipeline, "pipeline_id", "")
         if pipeline_id and pipeline_id in local_ids:
-            raise DeployError(
-                pipeline.name, 0, f"Duplicate local pipeline_id {pipeline_id!r}"
-            )
+            raise DeployError(pipeline.name, 0, f"Duplicate local pipeline_id {pipeline_id!r}")
         if pipeline_id:
             local_ids.add(pipeline_id)
 
@@ -538,9 +531,7 @@ def _match_remote_pipelines(
         if match is not None:
             remote_id = match.get("id")
             if not isinstance(remote_id, str) or not remote_id:
-                raise DeployError(
-                    pipeline.name, 0, "Matched pipeline has no valid server id"
-                )
+                raise DeployError(pipeline.name, 0, "Matched pipeline has no valid server id")
             if remote_id in remote_targets:
                 raise DeployError(
                     pipeline.name,
@@ -556,16 +547,18 @@ def _validate_pipeline_detail(detail: Any, pipeline_name: str) -> dict[str, Any]
     """Require the minimal full pipeline IR shape needed for semantic diff."""
     if not isinstance(detail, dict):
         raise DeployError(
-            pipeline_name, 0, "Malformed pipeline detail response: expected an object",
+            pipeline_name,
+            0,
+            "Malformed pipeline detail response: expected an object",
         )
     if not isinstance(detail.get("name"), str):
         raise DeployError(
-            pipeline_name, 0, "Malformed pipeline detail response: name must be a string",
+            pipeline_name,
+            0,
+            "Malformed pipeline detail response: name must be a string",
         )
     for field in ("nodes", "edges"):
-        if field not in detail or not (
-            detail[field] is None or isinstance(detail[field], list)
-        ):
+        if field not in detail or not (detail[field] is None or isinstance(detail[field], list)):
             raise DeployError(
                 pipeline_name,
                 0,
@@ -613,8 +606,7 @@ def _validate_pipeline_detail(detail: Any, pipeline_name: str) -> dict[str, Any]
                 and (
                     not isinstance(node_copy["capabilities"], list)
                     or not all(
-                        isinstance(capability, str)
-                        for capability in node_copy["capabilities"]
+                        isinstance(capability, str) for capability in node_copy["capabilities"]
                     )
                 )
             ):
@@ -710,15 +702,16 @@ def _parse_params(pairs: list[str] | None, operation: str) -> dict[str, str]:
     for pair in pairs or []:
         key, sep, value = pair.partition("=")
         if not sep or not key:
-            raise DeployError(
-                operation, 0, f"--param must be KEY=VALUE, got {pair!r}"
-            )
+            raise DeployError(operation, 0, f"--param must be KEY=VALUE, got {pair!r}")
         params[key] = value
     return params
 
 
 def _resolve_pipeline_id(
-    server: str, auth_header: str, identifier: str, operation: str,
+    server: str,
+    auth_header: str,
+    identifier: str,
+    operation: str,
 ) -> str:
     """Resolve a user-supplied pipeline identifier to the server's internal id.
 
@@ -736,12 +729,14 @@ def _resolve_pipeline_id(
     ]
     if not matches:
         raise DeployError(
-            operation, 0,
+            operation,
+            0,
             f"No pipeline matching {identifier!r} on {server}",
         )
     if len({i.get("id") for i in matches}) > 1:
         raise DeployError(
-            operation, 0,
+            operation,
+            0,
             f"{identifier!r} matches multiple pipelines; use the pipeline id",
         )
     return matches[0]["id"]
@@ -839,7 +834,9 @@ def cancel_cmd(args: argparse.Namespace) -> int:
     server, auth_header = _resolve_target(args, "cancel")
     result = _post_json(
         f"{server}/api/runs/{args.run}/cancel",
-        auth_header, {}, operation="cancel",
+        auth_header,
+        {},
+        operation="cancel",
     )
     print(f"Run {args.run}: {result.get('status', 'cancelled')}")
     return 0
@@ -854,7 +851,9 @@ def retry_cmd(args: argparse.Namespace) -> int:
     server, auth_header = _resolve_target(args, "retry")
     run = _post_json(
         f"{server}/api/runs/{args.run}/resume",
-        auth_header, {}, operation="retry",
+        auth_header,
+        {},
+        operation="retry",
     )
     if isinstance(run, dict) and run.get("id"):
         print(f"Resumed run {args.run}:")
@@ -867,9 +866,7 @@ def retry_cmd(args: argparse.Namespace) -> int:
 def backfill_cmd(args: argparse.Namespace) -> int:
     """Backfill a pipeline over a date range (a server-side operation)."""
     server, auth_header = _resolve_target(args, "backfill")
-    pipeline_id = _resolve_pipeline_id(
-        server, auth_header, args.pipeline, "backfill"
-    )
+    pipeline_id = _resolve_pipeline_id(server, auth_header, args.pipeline, "backfill")
     result = _post_json(
         f"{server}/api/pipelines/{pipeline_id}/backfill",
         auth_header,
@@ -880,10 +877,7 @@ def backfill_cmd(args: argparse.Namespace) -> int:
     count = result.get("count", len(runs))
     if result.get("error"):
         print(f"Backfill incomplete: {result['error']}")
-    print(
-        f"Backfill {args.pipeline} {args.start}..{args.end}: "
-        f"{count} run(s) triggered"
-    )
+    print(f"Backfill {args.pipeline} {args.start}..{args.end}: {count} run(s) triggered")
     for run_id in runs:
         print(f"  {run_id}")
     return 0
@@ -902,7 +896,9 @@ def main() -> None:
     dp.add_argument("file", help="Python file or directory containing pipelines")
     dp.add_argument("--server", default=None, help="Brokoli server URL")
     dp.add_argument("--api-key", default="", help="API key for authentication")
-    dp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    dp.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     dp.add_argument("--skip-validation", action="store_true", help="Skip pre-deploy validation")
     dp.add_argument(
         "--allow-legacy-server",
@@ -916,7 +912,9 @@ def main() -> None:
     vp.add_argument("file", help="Python file or directory")
     vp.add_argument("--server", default=None, help="Brokoli server URL (for conn_id checks)")
     vp.add_argument("--api-key", default="", help="API key")
-    vp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    vp.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     vp.add_argument(
         "--allow-legacy-server",
         action="store_true",
@@ -927,7 +925,13 @@ def main() -> None:
     # compile
     cp = sub.add_parser("compile", help="Compile pipeline to YAML (default) or JSON")
     cp.add_argument("file", help="Python file containing pipeline(s)")
-    cp.add_argument("-f", "--format", choices=["yaml", "json"], default="yaml", help="Output format (default: yaml)")
+    cp.add_argument(
+        "-f",
+        "--format",
+        choices=["yaml", "json"],
+        default="yaml",
+        help="Output format (default: yaml)",
+    )
     compile_mode = cp.add_mutually_exclusive_group()
     compile_mode.add_argument(
         "--normalized",
@@ -951,7 +955,9 @@ def main() -> None:
     df.add_argument("file", help="Python file or directory containing pipelines")
     df.add_argument("--server", default=None, help="Brokoli server URL")
     df.add_argument("--api-key", default="", help="API key for authentication")
-    df.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    df.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     df.set_defaults(func=diff_cmd)
 
     # run (trigger a deployed pipeline)
@@ -959,9 +965,13 @@ def main() -> None:
     rp.add_argument("pipeline", help="Pipeline id to run")
     rp.add_argument("--server", default=None, help="Brokoli server URL")
     rp.add_argument("--api-key", default="", help="API key for authentication")
-    rp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     rp.add_argument(
-        "--param", action="append", metavar="KEY=VALUE",
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
+    rp.add_argument(
+        "--param",
+        action="append",
+        metavar="KEY=VALUE",
         help="Runtime parameter override (repeatable)",
     )
     rp.set_defaults(func=run_cmd)
@@ -971,7 +981,9 @@ def main() -> None:
     sp.add_argument("run", help="Run id")
     sp.add_argument("--server", default=None, help="Brokoli server URL")
     sp.add_argument("--api-key", default="", help="API key for authentication")
-    sp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    sp.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     sp.set_defaults(func=status_cmd)
 
     # logs (of a run)
@@ -979,9 +991,12 @@ def main() -> None:
     lp.add_argument("run", help="Run id")
     lp.add_argument("--server", default=None, help="Brokoli server URL")
     lp.add_argument("--api-key", default="", help="API key for authentication")
-    lp.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
     lp.add_argument(
-        "--level", choices=["debug", "info", "warning", "error"],
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
+    lp.add_argument(
+        "--level",
+        choices=["debug", "info", "warning", "error"],
         help="Only show logs at this level",
     )
     lp.add_argument("--node", metavar="NODE_ID", help="Only show logs from this node")
@@ -992,7 +1007,9 @@ def main() -> None:
     cn.add_argument("run", help="Run id")
     cn.add_argument("--server", default=None, help="Brokoli server URL")
     cn.add_argument("--api-key", default="", help="API key for authentication")
-    cn.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    cn.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     cn.set_defaults(func=cancel_cmd)
 
     # retry (resume a run)
@@ -1000,7 +1017,9 @@ def main() -> None:
     rt.add_argument("run", help="Run id")
     rt.add_argument("--server", default=None, help="Brokoli server URL")
     rt.add_argument("--api-key", default="", help="API key for authentication")
-    rt.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    rt.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     rt.set_defaults(func=retry_cmd)
 
     # backfill (a pipeline over a date range)
@@ -1010,14 +1029,22 @@ def main() -> None:
     bf.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="End date")
     bf.add_argument("--server", default=None, help="Brokoli server URL")
     bf.add_argument("--api-key", default="", help="API key for authentication")
-    bf.add_argument("--env", default=None, help="Named environment from brokoli.yaml (server + token_env)")
+    bf.add_argument(
+        "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
+    )
     bf.set_defaults(func=backfill_cmd)
 
     # export
     ep = sub.add_parser("export", help="Export pipeline as YAML (default) or JSON")
     ep.add_argument("file", help="Python file containing pipeline")
     ep.add_argument("-o", "--output", help="Output file path")
-    ep.add_argument("-f", "--format", choices=["yaml", "json"], default="yaml", help="Output format (default: yaml)")
+    ep.add_argument(
+        "-f",
+        "--format",
+        choices=["yaml", "json"],
+        default="yaml",
+        help="Output format (default: yaml)",
+    )
     ep.set_defaults(func=export)
 
     args = parser.parse_args()
