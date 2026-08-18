@@ -28,6 +28,7 @@ from brokoli.resources import (
 )
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_ir
 from brokoli.client import APIError, AuthError, Client, Run, RunFailed, TERMINAL_RUN_STATUSES
+from brokoli.async_client import AsyncClient, AsyncRun
 
 __version__ = "0.4.0"
 __all__ = [
@@ -63,4 +64,8 @@ __all__ = [
     # Run-ops client (brokoli-sdk#57) -- fire, wait on, cancel, and read
     # runs programmatically; deploy without shelling out to the CLI.
     "Client", "Run", "APIError", "AuthError", "RunFailed", "TERMINAL_RUN_STATUSES",
+    # Async counterpart (brokoli-sdk#57 item 8) -- same operations, plus a
+    # genuinely push-based Run.watch()/wait() over SODP instead of polling
+    # (requires the "watch" extra: pip install "brokoli[watch]").
+    "AsyncClient", "AsyncRun",
 ]
