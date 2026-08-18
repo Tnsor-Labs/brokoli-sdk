@@ -448,6 +448,9 @@ def _list_remote_pipelines(
             operation,
         )
 
+        items: list[Any] | None
+        has_next: bool | None
+        cursor: str | None
         if isinstance(payload, list):
             items = payload
             has_next = False

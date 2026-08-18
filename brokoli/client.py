@@ -157,7 +157,8 @@ class Client:
         Explicit arguments win over the environment; the same variables
         the CLI honors, so one shell setup serves both.
         """
-        server = server or os.getenv("BROKOLI_SERVER", "")
+        if server is None:
+            server = os.getenv("BROKOLI_SERVER", "")
         token = os.getenv("BROKOLI_TOKEN", "")
         if token and "api_key" not in kwargs and "username" not in kwargs:
             kwargs["api_key"] = token

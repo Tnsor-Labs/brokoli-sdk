@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Any
+from typing import Optional, Any, TypeVar
 
 from brokoli.exceptions import ContextError, PipelineError
 from brokoli.pagination import PaginationStrategy
@@ -104,14 +104,17 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+_RefT = TypeVar("_RefT", bound=NodeRef)
+
+
 def _register_node(
     node_type: str,
     name: str,
     config: dict,
     *inputs: NodeRef,
-    ref_cls: type = NodeRef,
+    ref_cls: type[_RefT] = NodeRef,  # type: ignore[assignment]
     node_key: Optional[str] = None,
-) -> NodeRef:
+) -> _RefT:
     """Register a node in the current pipeline and connect inputs.
 
     Args:
@@ -313,7 +316,10 @@ def source_api(
         "scalar": ScalarRef,
         "artifact": ArtifactRef,
     }.get(response, DatasetRef)
-    return _register_node("source_api", name, config, ref_cls=ref_cls, node_key=node_key)
+    # ref_cls is picked at runtime from a dict, so mypy sees a union of
+    # classes rather than the single type _register_node's TypeVar needs --
+    # the union is exactly this function's own declared return type.
+    return _register_node("source_api", name, config, ref_cls=ref_cls, node_key=node_key)  # type: ignore[return-value]
 
 
 def source_file(
