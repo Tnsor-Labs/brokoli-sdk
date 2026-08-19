@@ -399,6 +399,21 @@ class Client:
             raise APIError(f"malformed deploy response: {response!r}")
         return response
 
+    def delete_pipeline(self, pipeline: Any) -> None:
+        """Delete a pipeline from the server.
+
+        ``pipeline`` resolves the same way as :meth:`run` and :meth:`deploy`
+        -- an internal id, logical pipeline_id, name, or an authored
+        ``Pipeline`` object. Raises ``APIError`` (status 404) if nothing
+        matches; the server's own delete is not idempotent, so a caller
+        that wants "gone either way" should catch that itself.
+        """
+        identifier = pipeline
+        if not isinstance(pipeline, str):
+            identifier = getattr(pipeline, "pipeline_id", "") or getattr(pipeline, "name", "")
+        remote = self.pipeline(str(identifier))
+        self._request("DELETE", f"/api/pipelines/{remote['id']}")
+
     # ------------------------------------------------------------------ runs
 
     def run(self, pipeline: Any, params: dict[str, str] | None = None) -> "Run":
