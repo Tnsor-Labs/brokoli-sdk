@@ -134,6 +134,9 @@ class AsyncClient:
             self._sync.deploy, pipeline, validate=validate, allow_legacy_server=allow_legacy_server
         )
 
+    async def delete_pipeline(self, pipeline: Any) -> None:
+        await asyncio.to_thread(self._sync.delete_pipeline, pipeline)
+
     # ------------------------------------------------------------------ runs
 
     async def run(self, pipeline: Any, params: dict[str, str] | None = None) -> "AsyncRun":

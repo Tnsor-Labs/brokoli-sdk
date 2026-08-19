@@ -43,6 +43,19 @@ those are called out explicitly.
     exactly like the sync `Run.wait()`. Every other `AsyncClient` method
     needs no extra dependency either way.
 
+- **Live-test fixture** (#57 item 9, `brokoli.testing.live_pipeline`).
+  Formalizes what every verification script under #57 reimplemented by
+  hand: deploy a pipeline under a unique id (dodging the server's slug
+  uniqueness index on concurrent or repeated runs), yield a handle to
+  fire real runs against it, and delete it from the server on exit --
+  whether the test passed, failed, or raised.
+  - `with live_pipeline(client, pipeline) as lp: lp.run().wait(...)`.
+    `cleanup=False` skips the delete, for inspecting a failing live test
+    afterward.
+  - New `Client.delete_pipeline(pipeline)` (and the `AsyncClient`
+    equivalent) backing the fixture's teardown -- the SDK had every
+    other pipeline CRUD operation already, this was the missing one.
+
 ### Fixed
 
 - **`Client.deploy()` on a fresh credentialed client.** `preflight_server_compatibility`

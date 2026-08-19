@@ -42,6 +42,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
     dlq_entries: dict = {}  # pipeline id -> list of entries
     last_dlq_query: dict = {}
     previews: dict = {}  # "run_id/node_id" -> {"columns": ..., "rows": ...}
+    deleted_pipeline_ids: list = []
 
     def log_message(self, *args):  # noqa: D102 - silence test output
         pass
@@ -94,6 +95,10 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             payload = self._read_body()
             payload["id"] = f"created-{len(cls.deployed) + 1}"
             cls.deployed.append(("POST", payload))
+            # A created pipeline is discoverable by subsequent list/lookup
+            # calls, same as a real server -- needed by anything that
+            # deploys then immediately runs or deletes by the returned id.
+            cls.pipelines_flat.append(payload)
             return self._json(201, payload)
         return self._json(404, {"error": "nope"})
 
@@ -105,6 +110,25 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             payload = self._read_body()
             cls.deployed.append(("PUT", payload))
             return self._json(200, payload)
+        return self._json(404, {"error": "nope"})
+
+    def do_DELETE(self):
+        cls = type(self)
+        if not self._authed():
+            return self._json(401, {"error": "unauthenticated"})
+        if self.path.startswith("/api/pipelines/"):
+            pipeline_id = self.path.split("/")[3]
+            all_ids = {p["id"] for p in cls.pipelines_flat} | {
+                p["id"] for page in cls.pipelines_pages for p in page
+            }
+            if pipeline_id not in all_ids:
+                return self._json(404, {"error": "not found"})
+            cls.deleted_pipeline_ids.append(pipeline_id)
+            cls.pipelines_flat = [p for p in cls.pipelines_flat if p["id"] != pipeline_id]
+            cls.pipelines_pages = [
+                [p for p in page if p["id"] != pipeline_id] for page in cls.pipelines_pages
+            ]
+            return self._json(204, {})
         return self._json(404, {"error": "nope"})
 
     def do_GET(self):
@@ -178,6 +202,7 @@ def server():
     FakeBrokoli.dlq_entries = {}
     FakeBrokoli.last_dlq_query = {}
     FakeBrokoli.previews = {}
+    FakeBrokoli.deleted_pipeline_ids = []
 
     httpd = HTTPServer(("127.0.0.1", 0), FakeBrokoli)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
