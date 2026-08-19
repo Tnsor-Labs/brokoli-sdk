@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 import brokoli
+from brokoli.client import DEFAULT_SERVER
 from brokoli.compatibility import preflight_server_compatibility
 from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir
@@ -77,14 +78,15 @@ def _load_environments() -> dict[str, dict]:
 
 
 def _resolve_target(
-    args: argparse.Namespace, operation: str, default_server: "str | None" = None
+    args: argparse.Namespace, operation: str, default_server: "str | None" = DEFAULT_SERVER
 ) -> "tuple[str, str]":
     """Resolve (server, auth_header) from --server/--api-key and/or --env.
 
     Precedence: an explicit ``--server`` always wins; otherwise ``--env``'s
-    configured server is used; otherwise ``default_server``. Auth likewise
-    prefers an explicit token (BROKOLI_TOKEN / --api-key) and falls back to
-    the environment's ``token_env``.
+    configured server is used; otherwise ``default_server`` (the hosted
+    platform, unless overridden). Auth likewise prefers an explicit token
+    (BROKOLI_TOKEN / --api-key) and falls back to the environment's
+    ``token_env``.
     """
     server = getattr(args, "server", None)
     env_cfg: dict = {}
@@ -250,7 +252,7 @@ def deploy(args: argparse.Namespace) -> None:
     """Deploy pipeline(s) to a Brokoli server."""
     from brokoli.validation import validate_pipeline
 
-    server, auth_header = _resolve_target(args, "deploy", default_server="http://localhost:8080")
+    server, auth_header = _resolve_target(args, "deploy")
     skip_validation: bool = getattr(args, "skip_validation", False)
     allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
     pipelines: list[Any] = []
@@ -297,7 +299,7 @@ def validate_cmd(args: argparse.Namespace) -> None:
     """Validate pipeline(s) without deploying."""
     from brokoli.validation import validate_pipeline
 
-    server, auth_header = _resolve_target(args, "validate", default_server="http://localhost:8080")
+    server, auth_header = _resolve_target(args, "validate")
     allow_legacy_server: bool = getattr(args, "allow_legacy_server", False)
     pipelines: list[Any] = []
 

@@ -49,6 +49,12 @@ TERMINAL_RUN_STATUSES = frozenset({"success", "failed", "cancelled", "blocked"})
 
 _DEFAULT_TIMEOUT = 10.0
 
+#: The hosted Brokoli platform -- used whenever no server is given
+#: explicitly, via ``BROKOLI_SERVER``, or via a named environment. Point
+#: at a self-hosted instance instead by passing ``server`` (or setting
+#: ``BROKOLI_SERVER``).
+DEFAULT_SERVER = "https://in-brokoli.orkestri.site"
+
 
 class APIError(BrokoliError):
     """An HTTP-level failure talking to the server.
@@ -129,7 +135,7 @@ class Client:
 
     def __init__(
         self,
-        server: str,
+        server: str = DEFAULT_SERVER,
         *,
         api_key: str | None = None,
         username: str | None = None,
@@ -137,7 +143,7 @@ class Client:
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         if not server:
-            raise ValueError("server is required, e.g. Client('http://localhost:8080')")
+            raise ValueError(f"server is required, e.g. Client({DEFAULT_SERVER!r})")
         if api_key and (username or password):
             raise ValueError("pass api_key OR username/password, not both")
         if (username is None) != (password is None):
@@ -158,7 +164,7 @@ class Client:
         the CLI honors, so one shell setup serves both.
         """
         if server is None:
-            server = os.getenv("BROKOLI_SERVER", "")
+            server = os.getenv("BROKOLI_SERVER", DEFAULT_SERVER)
         token = os.getenv("BROKOLI_TOKEN", "")
         if token and "api_key" not in kwargs and "username" not in kwargs:
             kwargs["api_key"] = token

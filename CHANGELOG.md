@@ -7,6 +7,21 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Changed
+
+- **`server` now defaults to the hosted platform** (`https://in-brokoli.orkestri.site`)
+  everywhere it was previously required or defaulted to a local address:
+  `Client()`/`AsyncClient()` (previously `server` was a required positional
+  arg), `Client.from_env()`/`AsyncClient.from_env()` (previously fell back
+  to an empty string, erroring, when `BROKOLI_SERVER` was unset), and every
+  CLI command (previously only `deploy`/`validate` defaulted to
+  `http://localhost:8080`; the other seven required `--server`/`--env`
+  outright). Self-hosted users are unaffected as long as they already pass
+  `server`/`--server`/`--env`/`BROKOLI_SERVER` -- this only changes what
+  happens when none of those are given. *(Breaking: code that relied on
+  `Client()` raising without a server, or a CLI command raising without
+  `--server`/`--env`, now silently targets the hosted platform instead.)*
+
 ## 0.5.0 — 2026-08-19
 
 First release actually published to PyPI (`pip install brokoli` now works — prior

@@ -47,6 +47,7 @@ from typing import Any, AsyncIterator, Callable
 
 from brokoli.client import (
     Client,
+    DEFAULT_SERVER,
     Run,
     RunFailed,
     TERMINAL_RUN_STATUSES,
@@ -87,7 +88,7 @@ class AsyncClient:
 
     def __init__(
         self,
-        server: str,
+        server: str = DEFAULT_SERVER,
         *,
         api_key: str | None = None,
         username: str | None = None,
