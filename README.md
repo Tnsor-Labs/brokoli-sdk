@@ -1,6 +1,23 @@
-# Brokoli Python SDK
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Tnsor-Labs/brokoli/main/ui/public/favicon.svg" width="56" height="56" alt="Brokoli" />
+</p>
 
-Define data pipelines in Python, run them visually.
+<h1 align="center">Brokoli Python SDK</h1>
+
+<p align="center">
+  Define data pipelines in Python, run them visually.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/brokoli/">
+    <img src="https://img.shields.io/pypi/v/brokoli?color=10B866&labelColor=0B1114" alt="PyPI" />
+  </a>
+  <a href="https://github.com/Tnsor-Labs/brokoli-sdk/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-10B866?labelColor=0B1114" alt="Apache 2.0" />
+  </a>
+</p>
+
+---
 
 See the [developer-experience roadmap](docs/developer-experience-roadmap.md)
 for the current support boundaries and planned SDK/backend work.
