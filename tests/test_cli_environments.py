@@ -10,6 +10,7 @@ import argparse
 import pytest
 
 import brokoli.cli as cli
+from brokoli.client import DEFAULT_SERVER
 from brokoli.exceptions import DeployError
 
 
@@ -98,8 +99,14 @@ class TestResolveTarget:
         server, _ = cli._resolve_target(_ns(), "deploy", default_server="http://d")
         assert server == "http://d"
 
-    def test_no_server_no_env_no_default_errors(self, monkeypatch, tmp_path):
+    def test_no_server_no_env_falls_back_to_hosted_platform(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("BROKOLI_CONFIG", raising=False)
+        monkeypatch.chdir(tmp_path)
+        server, _ = cli._resolve_target(_ns(), "run")
+        assert server == DEFAULT_SERVER
+
+    def test_no_server_no_env_explicit_none_default_errors(self, monkeypatch, tmp_path):
         monkeypatch.delenv("BROKOLI_CONFIG", raising=False)
         monkeypatch.chdir(tmp_path)
         with pytest.raises(DeployError, match="no server"):
-            cli._resolve_target(_ns(), "run")
+            cli._resolve_target(_ns(), "run", default_server=None)
