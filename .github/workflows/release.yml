@@ -1,0 +1,60 @@
+name: Release — PyPI
+
+# Triggered by pushing a version tag (vX.Y.Z). This is the ONLY thing that
+# publishes to PyPI -- there is no manual `twine upload` path, and no
+# long-lived API token stored anywhere. Publish uses PyPI's trusted
+# publishing (OIDC): the `pypi` environment below must be registered as a
+# trusted publisher for the `brokoli` project on PyPI before the first tag
+# push works -- see CONTRIBUTING.md for the exact one-time setup.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  build:
+    name: Build distribution
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build
+      - name: py.typed is in the wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          python -m zipfile -l "$wheel" | grep -q "brokoli/py.typed" \
+            || { echo "::error::py.typed missing from wheel"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # required for OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
