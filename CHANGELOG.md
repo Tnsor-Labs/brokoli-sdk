@@ -7,6 +7,11 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.5.0 — 2026-08-19
+
+First release actually published to PyPI (`pip install brokoli` now works — prior
+tags were GitHub-only, no publish pipeline existed).
+
 ### Added
 
 - **Observability reads** (#57 item 7). `client.dlq(pipeline, include_resolved=, limit=)`
