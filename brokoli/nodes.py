@@ -81,6 +81,14 @@ def _add_retry_timeout(
     source/sink nodes that historically exposed them from the SDK
     (brokoli-sdk#48). Mutates *optional* in place; keys stay UNSET (and so
     get dropped by ``_build_config``) unless the caller passed a value.
+
+    **Units differ between these two knobs, matching what the engine and
+    the editor already use:** ``retry_delay`` is in **milliseconds** (the
+    editor labels it "Delay (ms)" and defaults to 1000), while ``timeout``
+    is in **seconds**. Writing ``retry_delay=1`` therefore asks for a
+    one-millisecond wait, which retries a failing upstream as fast as the
+    network allows; ``validate_pipeline`` rejects suspiciously small
+    values for exactly that reason.
     """
     if retries is not UNSET and retries is not None:
         optional["max_retries"] = retries
