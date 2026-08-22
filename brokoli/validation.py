@@ -204,7 +204,6 @@ def _validate_enum(name, config, key, allowed, result):
         )
 
 
-
 # retry_delay reaches the engine in MILLISECONDS (the editor labels the
 # field "Delay (ms)" and defaults it to 1000), while timeout in the same
 # call is in SECONDS. Nothing in the SDK said so, and the natural Python
@@ -231,6 +230,7 @@ def _validate_retry_delay(name: str, config: dict[str, Any], result: ValidationR
             f"and defeats the backoff -- did you mean {int(delay * 1000)} (that many seconds)? "
             "Note that 'timeout' on the same node is in seconds.",
         )
+
 
 def _validate_sink_db(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("table"):
