@@ -204,6 +204,34 @@ def _validate_enum(name, config, key, allowed, result):
         )
 
 
+# retry_delay reaches the engine in MILLISECONDS (the editor labels the
+# field "Delay (ms)" and defaults it to 1000), while timeout in the same
+# call is in SECONDS. Nothing in the SDK said so, and the natural Python
+# reading of retry_delay=1 is one second — which silently becomes one
+# millisecond, disabling backoff and retrying a failing upstream as fast
+# as the network allows. Anything under this bound is far likelier to be
+# a unit mistake than a deliberate sub-50ms retry.
+_RETRY_DELAY_SUSPICIOUS_MS = 50
+
+
+def _validate_retry_delay(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+    delay = config.get("retry_delay")
+    if delay is None or isinstance(delay, bool) or not isinstance(delay, (int, float)):
+        return
+    if delay < 0:
+        result.add_error(name, "retry_delay", "'retry_delay' cannot be negative")
+        return
+    retries = config.get("max_retries") or 0
+    if retries and 0 < delay < _RETRY_DELAY_SUSPICIOUS_MS:
+        result.add_error(
+            name,
+            "retry_delay",
+            f"'retry_delay' is in milliseconds, so {delay!r} retries almost immediately "
+            f"and defeats the backoff -- did you mean {int(delay * 1000)} (that many seconds)? "
+            "Note that 'timeout' on the same node is in seconds.",
+        )
+
+
 def _validate_sink_db(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if not config.get("table"):
         result.add_error(name, "table", "Sink DB requires a 'table'")
@@ -345,6 +373,10 @@ def validate_pipeline(
         if name in seen_names:
             result.add_warning(name, "name", "Duplicate node name (also used by another node)")
         seen_names.add(name)
+
+        # Retry knobs are generic across node types, so they are checked
+        # here rather than in any one type's validator.
+        _validate_retry_delay(name, config, result)
 
         # Config validation stays dispatched by exact node type -- each
         # type has its own required-field shape. Only the "does this
