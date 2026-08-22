@@ -501,9 +501,18 @@ class Run:
         timeout: float = 600.0,
         poll_interval: float = 2.0,
         *,
+        initial_poll_interval: float = 0.05,
         raise_on_failure: bool = False,
     ) -> dict[str, Any]:
         """Poll until the run is terminal; return its final API object.
+
+        Polling starts at ``initial_poll_interval`` and backs off
+        geometrically up to ``poll_interval``, which is a ceiling rather
+        than a fixed cadence. A flat 2s cadence meant a run the server
+        finished in 200ms was still reported about two seconds later, so
+        the whole edit-run-look loop felt an order of magnitude slower
+        than the engine is; short runs now return almost immediately
+        while long ones settle back to the same one-request-per-2s load.
 
         Raises ``TimeoutError`` (stdlib) if the run is still live when the
         deadline passes, and ``RunFailed`` for a non-success terminal
@@ -511,6 +520,7 @@ class Run:
         object attached either way there is something to assert on.
         """
         deadline = time.monotonic() + timeout
+        interval = max(0.0, min(initial_poll_interval, poll_interval))
         last_status = ""
         while True:
             detail = self.detail()
@@ -519,9 +529,11 @@ class Run:
                 if raise_on_failure and last_status != "success":
                     raise RunFailed(detail)
                 return detail
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise TimeoutError(f"run {self.id} still {last_status!r} after {timeout:.0f}s")
-            time.sleep(poll_interval)
+            time.sleep(min(interval, remaining))
+            interval = min(interval * 1.6, poll_interval)
 
     def cancel(self) -> dict[str, Any]:
         """Request cancellation. Terminal statuses arrive asynchronously —
