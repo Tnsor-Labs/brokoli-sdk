@@ -7,6 +7,24 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Added
+
+- **`sink_db(truncate=True)`** clears an `overwrite` with `TRUNCATE`
+  instead of `DELETE`. A DELETE leaves one dead row per row removed, so a
+  table replaced on every run sits at a multiple of its real size and each
+  clear scans the leftovers. Ten overwrite cycles of a 50,000-row table on
+  Postgres 16: `DELETE` 7013ms / 500,000 dead rows / 137 MB against
+  `TRUNCATE` 2591ms / 0 dead rows / 13 MB.
+
+  Off by default, and not a free win: TRUNCATE takes a lock that blocks
+  anything *reading* the table for the whole load, where DELETE lets
+  readers keep seeing the previous contents until the write commits. Turn
+  it on for a table nothing queries mid-load; leave it off for one backing
+  a dashboard. Ignored on SQLite, which has no TRUNCATE and already
+  optimises a whole-table DELETE into the same thing.
+
+  Requires a server with the matching support.
+
 ### Changed
 
 - **`server` now defaults to the hosted platform** (`https://in-brokoli.orkestri.site`)
