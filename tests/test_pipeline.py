@@ -802,3 +802,28 @@ class TestRetryTimeoutParity:
             assert node["config"]["max_retries"] == 1
             assert node["config"]["timeout"] == 5
         json.dumps(data)
+
+
+class TestSinkDBTruncate:
+    """truncate changes which lock an overwrite takes, so it is opt-in.
+
+    TRUNCATE blocks anything reading the table for the whole load, where
+    DELETE lets readers keep seeing the previous contents. A node that did
+    not ask for it must not carry it.
+    """
+
+    def _sink_config(self, **kwargs):
+        with Pipeline("truncate_test") as p:
+            sink_db("Write", table="t", mode="overwrite", conn_id="c", **kwargs)
+        return p.to_json()["nodes"][0]["config"]
+
+    def test_absent_by_default(self):
+        assert "truncate" not in self._sink_config()
+
+    def test_carried_when_requested(self):
+        assert self._sink_config(truncate=True)["truncate"] is True
+
+    def test_explicit_false_is_carried(self):
+        # Distinguishable from unset, so an author can be explicit and a
+        # future default change cannot silently flip their pipeline.
+        assert self._sink_config(truncate=False)["truncate"] is False
