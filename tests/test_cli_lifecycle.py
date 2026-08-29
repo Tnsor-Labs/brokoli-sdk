@@ -174,3 +174,46 @@ class TestMainDispatch:
         monkeypatch.setattr(sys, "argv", ["brokoli", "backfill", "p", "--server", "s"])
         with pytest.raises(SystemExit):
             cli.main()
+
+
+class TestBackfillFieldMapping:
+    """RFC3339 bounds go through the interval-native fields; bare dates
+    keep the legacy inclusive-day fields (found live: the old verb put a
+    timestamp in the date-only field and the server refused it)."""
+
+    def _run(self, monkeypatch, start, end):
+        import argparse
+
+        captured = {}
+        monkeypatch.setattr(cli, "_resolve_target", lambda args, op: ("http://s", "Bearer t"))
+        monkeypatch.setattr(cli, "_resolve_pipeline_id", lambda *a, **k: "pid-1")
+        monkeypatch.setattr(
+            cli,
+            "_post_json",
+            lambda url, auth, body, operation: (
+                captured.update(body=body)
+                or {
+                    "intervals": 2,
+                    "first_interval_start": "x",
+                    "last_interval_end": "y",
+                    "concurrency": 1,
+                }
+            ),
+        )
+        args = argparse.Namespace(
+            pipeline="p", start=start, end=end, server="http://s", env=None, api_key=""
+        )
+        assert cli.backfill_cmd(args) == 0
+        return captured["body"]
+
+    def test_rfc3339_uses_interval_fields(self, monkeypatch):
+        body = self._run(monkeypatch, "2026-08-29T12:00:00Z", "2026-08-29T16:00:00Z")
+        assert body == {"start": "2026-08-29T12:00:00Z", "end": "2026-08-29T16:00:00Z"}
+
+    def test_bare_dates_use_legacy_fields(self, monkeypatch):
+        body = self._run(monkeypatch, "2026-08-01", "2026-08-07")
+        assert body == {"start_date": "2026-08-01", "end_date": "2026-08-07"}
+
+    def test_mixed_is_allowed(self, monkeypatch):
+        body = self._run(monkeypatch, "2026-08-01", "2026-08-29T16:00:00Z")
+        assert body == {"start_date": "2026-08-01", "end": "2026-08-29T16:00:00Z"}

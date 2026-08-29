@@ -872,16 +872,42 @@ def retry_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_bare_date(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
+
+
 def backfill_cmd(args: argparse.Namespace) -> int:
-    """Backfill a pipeline over a date range (a server-side operation)."""
+    """Backfill a pipeline over a date range (a server-side operation).
+
+    Interval-native servers (core v0.10.78+) take RFC3339 ``start``/``end``
+    and answer with a plan; bare YYYY-MM-DD keeps its historical
+    inclusive-day meaning through the legacy fields, which older servers
+    also understand. Passing an RFC3339 timestamp into the date-only
+    field was this verb's original bug -- the server refused it with
+    "extra text", found live while walking the tutorial.
+    """
     server, auth_header = _resolve_target(args, "backfill")
     pipeline_id = _resolve_pipeline_id(server, auth_header, args.pipeline, "backfill")
+    body: dict = {}
+    body["start_date" if _is_bare_date(args.start) else "start"] = args.start
+    body["end_date" if _is_bare_date(args.end) else "end"] = args.end
     result = _post_json(
         f"{server}/api/pipelines/{pipeline_id}/backfill",
         auth_header,
-        {"start_date": args.start, "end_date": args.end},
+        body,
         operation="backfill",
     )
+    if "intervals" in result:
+        # The interval-native plan response.
+        print(
+            f"Backfill {args.pipeline}: {result['intervals']} interval(s), "
+            f"{result.get('first_interval_start')} .. {result.get('last_interval_end')}, "
+            f"concurrency {result.get('concurrency')}"
+        )
+        if result.get("note"):
+            print(f"  {result['note']}")
+        return 0
+    # Legacy servers answered with the run-id list.
     runs = result.get("runs") or []
     count = result.get("count", len(runs))
     if result.get("error"):
