@@ -68,9 +68,7 @@ def test_normalized_compile_loads_temporary_pipeline_file(tmp_path, capsys):
         "with Pipeline('temporary') as pipeline:\n"
         "    source_db('Source', query='SELECT 1', conn_id='warehouse')\n"
     )
-    args = argparse.Namespace(
-        file=str(pipeline_file), format="yaml", normalized=True, check=False
-    )
+    args = argparse.Namespace(file=str(pipeline_file), format="yaml", normalized=True, check=False)
 
     assert cli.compile_cmd(args) == 0
     output = json.loads(capsys.readouterr().out)
@@ -97,9 +95,7 @@ def test_compile_check_imports_once_emits_no_ir_and_returns_status(
 
 
 @pytest.mark.parametrize("value", [{"not-json"}, float("nan")])
-def test_compile_check_reports_normalized_serialization_failure(
-    monkeypatch, capsys, value
-):
+def test_compile_check_reports_normalized_serialization_failure(monkeypatch, capsys, value):
     pipeline = FakePipeline(value=value)
     loader = Mock(return_value=[pipeline])
     result = Mock(valid=True)
@@ -162,8 +158,10 @@ def test_diff_cursor_pagination_name_fallback_and_difference(monkeypatch, capsys
     assert cli.diff_cmd(_diff_args()) == 1
     output = capsys.readouterr().out
     assert '"value": 1' in output and '"value": 2' in output
-    assert urlopen.call_args_list[1].args[0].full_url.endswith(
-        "/api/pipelines?limit=100&after=a%2Fb+%2B"
+    assert (
+        urlopen.call_args_list[1]
+        .args[0]
+        .full_url.endswith("/api/pipelines?limit=100&after=a%2Fb+%2B")
     )
 
 
@@ -259,9 +257,7 @@ def test_diff_rejects_malformed_pipeline_detail(monkeypatch, detail, message):
         ([], [{"from": "a", "to": "b", "condition": 1}], r"edges\[0\].condition"),
     ],
 )
-def test_diff_rejects_malformed_pipeline_detail_elements(
-    monkeypatch, nodes, edges, message
-):
+def test_diff_rejects_malformed_pipeline_detail_elements(monkeypatch, nodes, edges, message):
     _install_pipeline(monkeypatch, FakePipeline())
     monkeypatch.setattr(
         "urllib.request.urlopen",
@@ -334,9 +330,7 @@ def test_diff_accepts_null_legacy_nodes_and_edges(monkeypatch, capsys):
 
 def test_diff_converts_http_errors_to_operational_error(monkeypatch):
     _install_pipeline(monkeypatch, FakePipeline())
-    error = urllib.error.HTTPError(
-        "http://server", 401, "unauthorized", {}, io.BytesIO(b"denied")
-    )
+    error = urllib.error.HTTPError("http://server", 401, "unauthorized", {}, io.BytesIO(b"denied"))
     monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=error))
     with pytest.raises(Exception, match="HTTP 401"):
         cli.diff_cmd(_diff_args())

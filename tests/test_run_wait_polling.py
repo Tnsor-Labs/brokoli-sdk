@@ -4,6 +4,7 @@ A flat 2s poll meant a run the server finished in 200ms was reported two
 seconds later — measured end to end at ~2.07s against a server span of
 ~0.20s. These pin the backoff so that does not come back.
 """
+
 from __future__ import annotations
 
 import pytest

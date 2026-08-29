@@ -228,9 +228,7 @@ def test_all_decorator_families_accept_defaults_and_call_overrides():
         "validate-default",
         "sensor-default",
     ]
-    assert "node_key" in inspect.signature(
-        unsupported_condition, follow_wrapped=False
-    ).parameters
+    assert "node_key" in inspect.signature(unsupported_condition, follow_wrapped=False).parameters
     assert len(pipeline._nodes) == 15
 
 
@@ -267,9 +265,7 @@ def test_expand_node_key_is_separate_from_per_item_key_callable():
         def parse(rows):
             return rows
 
-        expanded = parse.expand(
-            key=item_key, node_key="parse-expanded", file=files
-        )
+        expanded = parse.expand(key=item_key, node_key="parse-expanded", file=files)
 
     node = pipeline._nodes[expanded.node_id]
     assert expanded.node_id == "parse-expanded"
@@ -309,9 +305,7 @@ def test_expand_string_node_key_remains_logical_and_key_remains_per_item():
         def parse(rows):
             return rows
 
-        expanded = parse.expand(
-            key=item_key, node_key="logical-expand", item=files
-        )
+        expanded = parse.expand(key=item_key, node_key="logical-expand", item=files)
 
     expansion = pipeline._nodes[expanded.node_id]["config"]["expansion"]
     assert expanded.node_id == "logical-expand"
@@ -336,6 +330,7 @@ def test_cross_pipeline_chaining_fails_before_lazy_wrapper_creation():
         foreign = source_db("Foreign")
 
     with Pipeline("Second") as pipeline:
+
         @task("Lazy")
         def lazy(rows):
             return rows
@@ -369,10 +364,7 @@ def _graph_state(pipeline):
         list(pipeline._edges),
         list(pipeline._node_order),
         {
-            node_id: {
-                branch: list(destinations)
-                for branch, destinations in branch_map.items()
-            }
+            node_id: {branch: list(destinations) for branch, destinations in branch_map.items()}
             for node_id, branch_map in pipeline._branches.items()
         },
         dict(pipeline._node_id_counters),
@@ -486,9 +478,7 @@ def test_missing_synthetic_refs_rejected_by_typed_union_and_expand_paths():
             expand_task.expand(item=missing_collection)
         assert _graph_state(pipeline) == before
 
-        mapped = DatasetRef(valid.node_id, pipeline).map(
-            lambda row: row, name="dataset_map(fn)"
-        )
+        mapped = DatasetRef(valid.node_id, pipeline).map(lambda row: row, name="dataset_map(fn)")
 
     assert mapped.node_id == "dataset_mapfn_1"
 

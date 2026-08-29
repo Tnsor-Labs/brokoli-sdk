@@ -56,14 +56,10 @@ def http_error(code):
 
 
 def test_fetches_capabilities_with_auth_and_normalized_url(monkeypatch):
-    urlopen = Mock(
-        return_value=FakeResponse({"supported_ir_versions": ["1.0", "2.0"]})
-    )
+    urlopen = Mock(return_value=FakeResponse({"supported_ir_versions": ["1.0", "2.0"]}))
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
 
-    capabilities = fetch_server_capabilities(
-        "http://server/", "Bearer secret"
-    )
+    capabilities = fetch_server_capabilities("http://server/", "Bearer secret")
 
     assert capabilities.supported_ir_versions == ("1.0", "2.0")
     request = urlopen.call_args.args[0]
@@ -77,9 +73,7 @@ def test_http_failures_are_not_legacy_bypassable(monkeypatch, code):
     monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=http_error(code)))
 
     with pytest.raises(CompatibilityError, match=f"HTTP {code}"):
-        fetch_server_capabilities(
-            "http://server", allow_legacy_server=True
-        )
+        fetch_server_capabilities("http://server", allow_legacy_server=True)
 
 
 @pytest.mark.parametrize("code", [404, 405])
@@ -90,9 +84,7 @@ def test_missing_legacy_endpoint_requires_explicit_override(monkeypatch, code):
         fetch_server_capabilities("http://server")
 
     with pytest.warns(LegacyServerWarning, match="could not be verified"):
-        result = fetch_server_capabilities(
-            "http://server", allow_legacy_server=True
-        )
+        result = fetch_server_capabilities("http://server", allow_legacy_server=True)
     assert result is None
 
 
@@ -104,9 +96,7 @@ def test_transport_failure_requires_explicit_override(monkeypatch):
         fetch_server_capabilities("http://server")
 
     with pytest.warns(LegacyServerWarning):
-        result = fetch_server_capabilities(
-            "http://server", allow_legacy_server=True
-        )
+        result = fetch_server_capabilities("http://server", allow_legacy_server=True)
     assert result is None
 
 
@@ -121,14 +111,10 @@ def test_transport_failure_requires_explicit_override(monkeypatch):
     ],
 )
 def test_malformed_payloads_fail_closed(monkeypatch, payload, message):
-    monkeypatch.setattr(
-        "urllib.request.urlopen", Mock(return_value=FakeResponse(payload))
-    )
+    monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=FakeResponse(payload)))
 
     with pytest.raises(CompatibilityError, match=message):
-        fetch_server_capabilities(
-            "http://server", allow_legacy_server=True
-        )
+        fetch_server_capabilities("http://server", allow_legacy_server=True)
 
 
 def test_reported_ir_mismatch_cannot_be_bypassed(monkeypatch):
@@ -170,11 +156,7 @@ def test_conditional_pipeline_preflight_accepts_ir_21(monkeypatch):
 
     monkeypatch.setattr(
         "urllib.request.urlopen",
-        Mock(
-            return_value=FakeResponse(
-                {"supported_ir_versions": ["2.0", "2.1"]}
-            )
-        ),
+        Mock(return_value=FakeResponse({"supported_ir_versions": ["2.0", "2.1"]})),
     )
     preflight_server_compatibility([pipeline], "http://server")
 
@@ -193,9 +175,7 @@ def test_deploy_loads_and_preflights_all_pipelines_before_persistence(monkeypatc
         allow_legacy_server=False,
     )
 
-    monkeypatch.setattr(
-        cli, "_collect_files", lambda _: list(pipelines_by_file)
-    )
+    monkeypatch.setattr(cli, "_collect_files", lambda _: list(pipelines_by_file))
     monkeypatch.setattr(
         cli,
         "load_pipeline_from_file",
@@ -279,9 +259,7 @@ def test_validate_uses_the_same_preflight(monkeypatch):
     "command, handler_name",
     [("deploy", "deploy"), ("validate", "validate_cmd")],
 )
-def test_cli_accepts_legacy_override_for_preflight(
-    monkeypatch, command, handler_name
-):
+def test_cli_accepts_legacy_override_for_preflight(monkeypatch, command, handler_name):
     handler = Mock()
     monkeypatch.setattr(cli, handler_name, handler)
     monkeypatch.setattr(

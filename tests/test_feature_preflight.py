@@ -31,9 +31,7 @@ def _serve_capabilities(monkeypatch, payload):
         def read(self):
             return json.dumps(payload).encode()
 
-    monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, timeout=0: _Resp()
-    )
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: _Resp())
 
 
 def _conditional_pipeline():
@@ -44,9 +42,7 @@ def _conditional_pipeline():
         gate = condition_node("Gate", expression="row_count > 0")
         src >> gate
         gate.when(transform("Keep", rules=[{"type": "rename", "mapping": {"a": "b"}}]))
-        gate.otherwise(
-            notify("Alert", notify_type="webhook", webhook_url="https://h.example/x")
-        )
+        gate.otherwise(notify("Alert", notify_type="webhook", webhook_url="https://h.example/x"))
     return p
 
 
@@ -74,9 +70,7 @@ class TestRequiredFeatures:
         assert required_execution_features(p.to_json()) == {"conditional-routing"}
 
         paged = _paginated_pipeline()
-        assert required_execution_features(paged.to_json()) == {
-            "pagination-checkpoints"
-        }
+        assert required_execution_features(paged.to_json()) == {"pagination-checkpoints"}
 
         with Pipeline("u", pipeline_id="u") as up:
             a = source_file("A", path="/a.csv", format="csv")
@@ -111,18 +105,14 @@ class TestFeatureGating:
     def test_advertised_features_pass(self, monkeypatch):
         _serve_capabilities(
             monkeypatch,
-            {"supported_ir_versions": ["2.0", "2.1"],
-             "supported_execution_features": self.FULL},
+            {"supported_ir_versions": ["2.0", "2.1"], "supported_execution_features": self.FULL},
         )
-        preflight_server_compatibility(
-            [_conditional_pipeline(), _paginated_pipeline()], "http://s"
-        )
+        preflight_server_compatibility([_conditional_pipeline(), _paginated_pipeline()], "http://s")
 
     def test_missing_feature_fails_naming_it(self, monkeypatch):
         _serve_capabilities(
             monkeypatch,
-            {"supported_ir_versions": ["2.0", "2.1"],
-             "supported_execution_features": ["union"]},
+            {"supported_ir_versions": ["2.0", "2.1"], "supported_execution_features": ["union"]},
         )
         with pytest.raises(CompatibilityError, match="conditional-routing"):
             preflight_server_compatibility([_conditional_pipeline()], "http://s")
@@ -134,8 +124,10 @@ class TestFeatureGating:
         # on the unknown catchup field.
         _serve_capabilities(
             monkeypatch,
-            {"supported_ir_versions": ["2.0", "2.1"],
-             "supported_execution_features": ["union", "conditional-routing"]},
+            {
+                "supported_ir_versions": ["2.0", "2.1"],
+                "supported_execution_features": ["union", "conditional-routing"],
+            },
         )
         with pytest.raises(CompatibilityError, match="data_intervals"):
             preflight_server_compatibility([_catchup_pipeline()], "http://s")
@@ -143,16 +135,14 @@ class TestFeatureGating:
     def test_catch_up_accepted_by_advertising_server(self, monkeypatch):
         _serve_capabilities(
             monkeypatch,
-            {"supported_ir_versions": ["2.0", "2.1"],
-             "supported_execution_features": self.FULL},
+            {"supported_ir_versions": ["2.0", "2.1"], "supported_execution_features": self.FULL},
         )
         preflight_server_compatibility([_catchup_pipeline()], "http://s")
 
     def test_legacy_flag_cannot_override_feature_mismatch(self, monkeypatch):
         _serve_capabilities(
             monkeypatch,
-            {"supported_ir_versions": ["2.0", "2.1"],
-             "supported_execution_features": []},
+            {"supported_ir_versions": ["2.0", "2.1"], "supported_execution_features": []},
         )
         with pytest.raises(CompatibilityError, match="cannot override"):
             preflight_server_compatibility(
@@ -162,8 +152,7 @@ class TestFeatureGating:
     def test_malformed_feature_field_fails_closed(self, monkeypatch):
         _serve_capabilities(
             monkeypatch,
-            {"supported_ir_versions": ["2.0"],
-             "supported_execution_features": [1, ""]},
+            {"supported_ir_versions": ["2.0"], "supported_execution_features": [1, ""]},
         )
         with pytest.raises(CompatibilityError, match="supported_execution_features"):
             preflight_server_compatibility([], "http://s")
@@ -173,9 +162,16 @@ class TestFeatureGating:
         # its runtime rejects SDK-emitted configs -- so a gating client
         # refuses them at deploy instead of failing at run time.
         payload = {
-            "name": "ds", "ir_version": "2.0",
-            "nodes": [{"id": "m", "type": "dataset_map", "name": "M",
-                       "config": {"function": {"name": "f"}}}],
+            "name": "ds",
+            "ir_version": "2.0",
+            "nodes": [
+                {
+                    "id": "m",
+                    "type": "dataset_map",
+                    "name": "M",
+                    "config": {"function": {"name": "f"}},
+                }
+            ],
             "edges": [],
         }
         assert required_execution_features(payload) == {"dataset-map"}

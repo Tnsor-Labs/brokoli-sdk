@@ -88,16 +88,23 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             if not cls.device_supported:
                 return self._json(404, {"error": "not found"})
             cls.device_starts += 1
-            return self._json(200, {
-                "device_code": "devcode-1", "user_code": "BBBB-CCCC",
-                "verification_uri": "http://fake/#/device?code=BBBB-CCCC",
-                "interval": 0, "expires_in": 5,
-            })
+            return self._json(
+                200,
+                {
+                    "device_code": "devcode-1",
+                    "user_code": "BBBB-CCCC",
+                    "verification_uri": "http://fake/#/device?code=BBBB-CCCC",
+                    "interval": 0,
+                    "expires_in": 5,
+                },
+            )
         if self.path == "/api/auth/oauth/device/poll":
             self._read_body()
             if not cls.device_supported:
                 return self._json(404, {"error": "not found"})
-            answer = cls.device_poll_answers.pop(0) if cls.device_poll_answers else {"status": "expired"}
+            answer = (
+                cls.device_poll_answers.pop(0) if cls.device_poll_answers else {"status": "expired"}
+            )
             return self._json(200, answer)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})

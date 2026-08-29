@@ -85,7 +85,9 @@ def poll_for_token(
         if time.monotonic() > deadline:
             raise DeviceAuthError("the code expired before it was approved; run brokoli auth again")
         time.sleep(wait)
-        status, payload = _post_json(server, "/api/auth/oauth/device/poll", {"device_code": device_code})
+        status, payload = _post_json(
+            server, "/api/auth/oauth/device/poll", {"device_code": device_code}
+        )
         if status != 200:
             raise DeviceAuthError(f"polling failed (HTTP {status}): {payload}")
         answer = str(payload.get("status", ""))

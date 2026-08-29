@@ -80,9 +80,7 @@ class TestRun:
             return {"id": "run-123", "status": "pending"}
 
         monkeypatch.setattr(cli, "_post_json", fake_post)
-        rc = cli.run_cmd(
-            _ns(pipeline="orders", server="https://s", api_key="k", param=None)
-        )
+        rc = cli.run_cmd(_ns(pipeline="orders", server="https://s", api_key="k", param=None))
         assert rc == 0
         # the resolved internal id, not the user-supplied identifier
         assert seen["url"] == "https://s/api/pipelines/orders-uuid/run"
@@ -96,22 +94,23 @@ class TestRun:
         seen = {}
         monkeypatch.setattr(cli, "_resolve_pipeline_id", lambda *a: "p-uuid")
         monkeypatch.setattr(
-            cli, "_post_json",
+            cli,
+            "_post_json",
             lambda url, auth, body, operation: seen.update(body=body) or {"id": "r"},
         )
-        cli.run_cmd(
-            _ns(pipeline="p", server="https://s", api_key="", param=["x=1", "y=2"])
-        )
+        cli.run_cmd(_ns(pipeline="p", server="https://s", api_key="", param=["x=1", "y=2"]))
         assert seen["body"] == {"params": {"x": "1", "y": "2"}}
 
     def test_bad_param_raises_before_any_request(self, monkeypatch):
         called = {"n": 0}
         monkeypatch.setattr(
-            cli, "_resolve_pipeline_id",
+            cli,
+            "_resolve_pipeline_id",
             lambda *a: called.__setitem__("n", called["n"] + 1),
         )
         monkeypatch.setattr(
-            cli, "_post_json",
+            cli,
+            "_post_json",
             lambda *a, **k: called.__setitem__("n", called["n"] + 1),
         )
         with pytest.raises(DeployError, match="KEY=VALUE"):
@@ -153,7 +152,8 @@ class TestStatus:
 
     def test_minimal_run_object(self, monkeypatch, capsys):
         monkeypatch.setattr(
-            cli, "_get_json",
+            cli,
+            "_get_json",
             lambda url, auth, operation: {"id": "r", "pipeline_id": "p", "status": "pending"},
         )
         cli.status_cmd(_ns(run="r", server="s", api_key=""))
@@ -175,11 +175,13 @@ class TestMainDispatch:
         # set_defaults(func=run_cmd) in main() resolves the name at call
         # time, so patching the module global here reaches the subparser.
         monkeypatch.setattr(
-            cli, "run_cmd",
+            cli,
+            "run_cmd",
             lambda args: captured.setdefault("args", args) or 0,
         )
         monkeypatch.setattr(
-            sys, "argv",
+            sys,
+            "argv",
             ["brokoli", "run", "orders", "--server", "https://s", "--param", "a=1"],
         )
         cli.main()
@@ -192,12 +194,11 @@ class TestMainDispatch:
 
         captured = {}
         monkeypatch.setattr(
-            cli, "status_cmd",
+            cli,
+            "status_cmd",
             lambda args: captured.setdefault("args", args) or 0,
         )
-        monkeypatch.setattr(
-            sys, "argv", ["brokoli", "status", "run-7", "--server", "https://s"]
-        )
+        monkeypatch.setattr(sys, "argv", ["brokoli", "status", "run-7", "--server", "https://s"])
         cli.main()
         assert captured["args"].run == "run-7"
         assert captured["args"].server == "https://s"

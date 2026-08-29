@@ -18,8 +18,13 @@ separately and not yet started.
 """
 
 from brokoli import (
-    Pipeline, source_api,
-    offset_pages, cursor_pages, numbered_pages, next_link_pages, link_header_pages,
+    Pipeline,
+    source_api,
+    offset_pages,
+    cursor_pages,
+    numbered_pages,
+    next_link_pages,
+    link_header_pages,
 )
 from brokoli.pagination import PaginationStrategy, ExecutionPolicy
 from brokoli.validation import validate_pipeline
@@ -29,11 +34,13 @@ from brokoli.validation import validate_pipeline
 # params
 # ---------------------------------------------------------------------------
 
+
 class TestParams:
     def test_params_static_values_serialize(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://api.example.com/data",
+                "S",
+                url="https://api.example.com/data",
                 params={"hasCoordinate": "true", "limit": 50},
             )
         config = p.to_json()["nodes"][0]["config"]
@@ -45,7 +52,8 @@ class TestParams:
         resolve, same as url/headers/query already do elsewhere."""
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://api.example.com/data",
+                "S",
+                url="https://api.example.com/data",
                 params={"date": "{{ ds }}"},
             )
         config = p.to_json()["nodes"][0]["config"]
@@ -71,6 +79,7 @@ class TestParams:
 # ---------------------------------------------------------------------------
 # response / records / value_path
 # ---------------------------------------------------------------------------
+
 
 class TestResponseShape:
     def test_response_defaults_to_dataset_and_is_always_present(self):
@@ -110,6 +119,7 @@ class TestResponseShape:
 # ---------------------------------------------------------------------------
 # Pagination strategy builders
 # ---------------------------------------------------------------------------
+
 
 class TestOffsetPages:
     def test_full_config(self):
@@ -195,6 +205,7 @@ class TestLinkHeaderPages:
 # with_execution
 # ---------------------------------------------------------------------------
 
+
 class TestWithExecution:
     def test_no_execution_by_default(self):
         strat = offset_pages(page_size=100)
@@ -202,8 +213,10 @@ class TestWithExecution:
 
     def test_with_execution_attaches_policy(self):
         strat = offset_pages(page_size=100).with_execution(
-            max_concurrency=4, requests_per_second=5,
-            retry_scope="page", checkpoint_every=10,
+            max_concurrency=4,
+            requests_per_second=5,
+            retry_scope="page",
+            checkpoint_every=10,
         )
         assert strat.execution_config() == {
             "max_concurrency": 4,
@@ -230,7 +243,8 @@ class TestWithExecution:
 
     def test_page_max_retries_and_page_retry_backoff_serialize(self):
         strat = offset_pages(page_size=100).with_execution(
-            page_max_retries=5, page_retry_backoff="linear",
+            page_max_retries=5,
+            page_retry_backoff="linear",
         )
         assert strat.execution_config() == {
             "page_max_retries": 5,
@@ -248,11 +262,14 @@ class TestWithExecution:
 # pagination= wired into source_api
 # ---------------------------------------------------------------------------
 
+
 class TestSourceApiPagination:
     def test_pagination_strategy_serializes_into_node_config(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://x", records="results",
+                "S",
+                url="https://x",
+                records="results",
                 pagination=offset_pages(page_size=300, end_flag="endOfRecords"),
             )
         config = p.to_json()["nodes"][0]["config"]
@@ -268,7 +285,9 @@ class TestSourceApiPagination:
     def test_pagination_with_execution_serializes_execution_block(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://x", records="results",
+                "S",
+                url="https://x",
+                records="results",
                 pagination=offset_pages(page_size=300).with_execution(max_concurrency=4),
             )
         config = p.to_json()["nodes"][0]["config"]
@@ -285,14 +304,21 @@ class TestSourceApiPagination:
     def test_pagination_accepts_raw_dict(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://x", records="results",
+                "S",
+                url="https://x",
+                records="results",
                 pagination={"strategy": "cursor", "cursor_path": "next", "cursor_param": "c"},
             )
         config = p.to_json()["nodes"][0]["config"]
-        assert config["pagination"] == {"strategy": "cursor", "cursor_path": "next", "cursor_param": "c"}
+        assert config["pagination"] == {
+            "strategy": "cursor",
+            "cursor_path": "next",
+            "cursor_param": "c",
+        }
 
     def test_pagination_rejects_bad_type(self):
         import pytest
+
         with Pipeline("test") as p:
             with pytest.raises(TypeError):
                 source_api("S", url="https://x", pagination="offset")
@@ -301,6 +327,7 @@ class TestSourceApiPagination:
 # ---------------------------------------------------------------------------
 # RFC worked example: GBIF
 # ---------------------------------------------------------------------------
+
 
 class TestGBIFWorkedExample:
     def test_gbif_example_single_node_no_page_loop(self):
@@ -311,7 +338,9 @@ class TestGBIFWorkedExample:
                 params={"hasCoordinate": "true", "occurrenceStatus": "PRESENT"},
                 records="results",
                 pagination=offset_pages(
-                    page_size=300, max_records=30_000, end_flag="endOfRecords",
+                    page_size=300,
+                    max_records=30_000,
+                    end_flag="endOfRecords",
                 ).with_execution(max_concurrency=4, requests_per_second=5),
             )
 
@@ -344,6 +373,7 @@ class TestGBIFWorkedExample:
 # Validation
 # ---------------------------------------------------------------------------
 
+
 class TestValidateResponseShape:
     def test_invalid_response_kind_rejected(self):
         with Pipeline("test") as p:
@@ -358,10 +388,7 @@ class TestValidateResponseShape:
             source_api("S", url="https://x", records="results", value_path="count")
         vr = validate_pipeline(p)
         assert not vr.valid
-        assert any(
-            "records" in e.field and "value_path" in e.message
-            for e in vr.errors
-        )
+        assert any("records" in e.field and "value_path" in e.message for e in vr.errors)
 
     def test_records_alone_is_valid(self):
         with Pipeline("test") as p:
@@ -380,7 +407,10 @@ class TestValidatePagination:
     def test_pagination_without_dataset_response_rejected(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://x", response="scalar", value_path="count",
+                "S",
+                url="https://x",
+                response="scalar",
+                value_path="count",
                 pagination=offset_pages(page_size=10),
             )
         vr = validate_pipeline(p)
@@ -390,7 +420,9 @@ class TestValidatePagination:
     def test_pagination_with_dataset_response_is_valid(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://x", records="results",
+                "S",
+                url="https://x",
+                records="results",
                 pagination=offset_pages(page_size=10),
             )
         vr = validate_pipeline(p)
@@ -399,12 +431,16 @@ class TestValidatePagination:
     def test_unknown_pagination_strategy_rejected(self):
         with Pipeline("test") as p:
             source_api(
-                "S", url="https://x", records="results",
+                "S",
+                url="https://x",
+                records="results",
                 pagination={"strategy": "not_a_real_strategy"},
             )
         vr = validate_pipeline(p)
         assert not vr.valid
-        assert any("pagination" in e.field and "not_a_real_strategy" in e.message for e in vr.errors)
+        assert any(
+            "pagination" in e.field and "not_a_real_strategy" in e.message for e in vr.errors
+        )
 
     def test_known_strategies_all_accepted(self):
         strategies = [

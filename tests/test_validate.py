@@ -134,6 +134,7 @@ class TestValidateCodeNode:
         with Pipeline("test") as p:
             # Manually create a code node with no script
             from brokoli.pipeline import _make_id
+
             nid = _make_id("empty")
             p._add_node(nid, "code", "Empty Task", {"language": "python", "script": ""})
         vr = validate_pipeline(p)
@@ -145,6 +146,7 @@ class TestValidateCondition:
     def test_missing_expression(self):
         with Pipeline("test") as p:
             from brokoli.pipeline import _make_id
+
             nid = _make_id("cond")
             p._add_node(nid, "condition", "Empty Cond", {})
         vr = validate_pipeline(p)
@@ -154,6 +156,7 @@ class TestValidateCondition:
         with Pipeline("test") as p:
             src = source_db("A", query="SELECT 1", conn_id="pg")
             from brokoli.pipeline import _make_id
+
             nid = _make_id("cond")
             p._add_node(nid, "condition", "Check", {"expression": "row_count > 0"})
             p._add_edge(src.node_id, nid)
@@ -164,6 +167,7 @@ class TestValidateCondition:
         # Mirrors the server: a condition node requires exactly 1 input.
         with Pipeline("test") as p:
             from brokoli.pipeline import _make_id
+
             nid = _make_id("cond")
             p._add_node(nid, "condition", "Check", {"expression": "row_count > 0"})
         vr = validate_pipeline(p)
@@ -224,7 +228,7 @@ class TestValidateFullPipeline:
     def test_multiple_errors(self):
         with Pipeline("bad") as p:
             source_db("No Query")  # missing query + conn_id
-            sink_db("No Table")    # missing table + conn_id
+            sink_db("No Table")  # missing table + conn_id
             quality_check("No Rules")  # missing rules
         vr = validate_pipeline(p)
         assert not vr.valid
@@ -267,9 +271,17 @@ class TestValidateMigrateMode:
 
     def _pipe(self, mode, **kw):
         from brokoli import migrate
+
         with Pipeline("t", pipeline_id="t") as p:
-            migrate("Mig", source_conn_id="a", target_conn_id="b",
-                    query="SELECT 1", table="t", mode=mode, **kw)
+            migrate(
+                "Mig",
+                source_conn_id="a",
+                target_conn_id="b",
+                query="SELECT 1",
+                table="t",
+                mode=mode,
+                **kw,
+            )
         return p
 
     def test_append_and_overwrite_valid(self):

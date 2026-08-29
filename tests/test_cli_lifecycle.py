@@ -1,9 +1,9 @@
 """brokoli-sdk#15 M3: the run-lifecycle commands.
 
-    logs     -> GET  /api/runs/{id}/logs
-    cancel   -> POST /api/runs/{id}/cancel
-    retry    -> POST /api/runs/{id}/resume   (resume-from-failure)
-    backfill -> POST /api/pipelines/{id}/backfill
+logs     -> GET  /api/runs/{id}/logs
+cancel   -> POST /api/runs/{id}/cancel
+retry    -> POST /api/runs/{id}/resume   (resume-from-failure)
+backfill -> POST /api/pipelines/{id}/backfill
 """
 
 import argparse
@@ -30,9 +30,7 @@ class TestLogs:
             ]
 
         monkeypatch.setattr(cli, "_get_json", fake_get)
-        rc = cli.logs_cmd(
-            _ns(run="r1", server="https://s", api_key="k", level=None, node=None)
-        )
+        rc = cli.logs_cmd(_ns(run="r1", server="https://s", api_key="k", level=None, node=None))
         assert rc == 0
         assert seen["url"] == "https://s/api/runs/r1/logs"
         assert seen["operation"] == "logs"
@@ -43,12 +41,11 @@ class TestLogs:
     def test_level_and_node_become_query_params(self, monkeypatch):
         seen = {}
         monkeypatch.setattr(
-            cli, "_get_json",
+            cli,
+            "_get_json",
             lambda url, auth, operation: seen.update(url=url) or [],
         )
-        cli.logs_cmd(
-            _ns(run="r1", server="https://s", api_key="", level="error", node="n9")
-        )
+        cli.logs_cmd(_ns(run="r1", server="https://s", api_key="", level="error", node="n9"))
         assert "level=error" in seen["url"]
         assert "node_id=n9" in seen["url"]
         assert seen["url"].startswith("https://s/api/runs/r1/logs?")
@@ -115,8 +112,13 @@ class TestBackfill:
 
         monkeypatch.setattr(cli, "_post_json", fake_post)
         rc = cli.backfill_cmd(
-            _ns(pipeline="orders", start="2026-01-01", end="2026-01-03",
-                server="https://s", api_key="k")
+            _ns(
+                pipeline="orders",
+                start="2026-01-01",
+                end="2026-01-03",
+                server="https://s",
+                api_key="k",
+            )
         )
         assert rc == 0
         assert seen["url"] == "https://s/api/pipelines/p-uuid/backfill"
@@ -129,12 +131,12 @@ class TestBackfill:
     def test_reports_partial_error(self, monkeypatch, capsys):
         monkeypatch.setattr(cli, "_resolve_pipeline_id", lambda *a: "p-uuid")
         monkeypatch.setattr(
-            cli, "_post_json",
+            cli,
+            "_post_json",
             lambda *a, **k: {"runs": ["r1"], "error": "one date failed"},
         )
         cli.backfill_cmd(
-            _ns(pipeline="p", start="2026-01-01", end="2026-01-02",
-                server="s", api_key="")
+            _ns(pipeline="p", start="2026-01-01", end="2026-01-02", server="s", api_key="")
         )
         out = capsys.readouterr().out
         assert "incomplete" in out and "one date failed" in out
@@ -155,11 +157,13 @@ class TestMainDispatch:
         import sys
 
         captured = {}
-        cmd = {"logs": "logs_cmd", "cancel": "cancel_cmd",
-               "retry": "retry_cmd", "backfill": "backfill_cmd"}[argv[0]]
-        monkeypatch.setattr(
-            cli, cmd, lambda args: captured.setdefault("args", args) or 0
-        )
+        cmd = {
+            "logs": "logs_cmd",
+            "cancel": "cancel_cmd",
+            "retry": "retry_cmd",
+            "backfill": "backfill_cmd",
+        }[argv[0]]
+        monkeypatch.setattr(cli, cmd, lambda args: captured.setdefault("args", args) or 0)
         monkeypatch.setattr(sys, "argv", ["brokoli", *argv])
         cli.main()
         assert getattr(captured["args"], attr) == expected

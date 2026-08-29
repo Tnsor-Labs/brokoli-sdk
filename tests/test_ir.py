@@ -91,9 +91,7 @@ def test_empty_server_defaults_and_generated_webhook_secret_are_equivalent():
         "schedule_timezone": "UTC",
     }
     assert normalize_ir(minimal) == normalize_ir(server)
-    assert normalize_ir({**minimal, "webhook_token": "generated"})[
-        "webhook_token"
-    ] == ""
+    assert normalize_ir({**minimal, "webhook_token": "generated"})["webhook_token"] == ""
     assert "webhook_token" not in normalize_ir(minimal)
 
 

@@ -26,6 +26,7 @@ from brokoli.exceptions import PipelineError
 class TestAsyncAndLambdaRejection:
     def test_async_task_rejected_with_named_error(self):
         with Pipeline("test"):
+
             async def fetch(rows):
                 return rows
 

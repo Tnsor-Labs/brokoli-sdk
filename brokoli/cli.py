@@ -912,10 +912,14 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     # auth
-    ap = sub.add_parser("auth", help="Authorize this terminal via the browser (no password in the shell)")
+    ap = sub.add_parser(
+        "auth", help="Authorize this terminal via the browser (no password in the shell)"
+    )
     ap.add_argument("--server", default=None, help="Brokoli server URL")
     ap.add_argument("--env", default=None, help="Named environment from the project config")
-    ap.add_argument("--no-browser", action="store_true", help="Print the link instead of opening a browser")
+    ap.add_argument(
+        "--no-browser", action="store_true", help="Print the link instead of opening a browser"
+    )
     ap.set_defaults(func=auth_cmd)
 
     # deploy
