@@ -609,6 +609,77 @@ class TestNewNodeTypes:
             with pytest.raises(PipelineError, match="Nested conditional routing"):
                 inner.otherwise(notify("Target", webhook_url="https://example.test"))
 
+    def test_condition_branch_rejects_rshift_chains(self):
+        # brokoli-sdk#81: when(a >> b) receives b (>> returns its right
+        # side), so the branch edge would land on the chain's tail and
+        # leave a with no input -- silently, since nothing downstream
+        # errors. The guard turns the silent misroute into a loud one.
+        with Pipeline("conditional") as p:
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "row_count > 0", src)
+            with pytest.raises(PipelineError, match="already has input"):
+                gate.when(
+                    transform("Shape", rules=[{"type": "rename", "mapping": {"a": "b"}}])
+                    >> sink_file("Load", path="/out.csv")
+                )
+        # The refused branch left no condition edge behind.
+        assert not any(cond is not None for _, _, cond in p._edges)
+
+        # otherwise() shares _route, so one guard covers both.
+        with Pipeline("conditional"):
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "row_count > 0", src)
+            with pytest.raises(PipelineError, match="already has input"):
+                gate.otherwise(
+                    transform("Shape", rules=[{"type": "rename", "mapping": {"a": "b"}}])
+                    >> sink_file("Load", path="/out.csv")
+                )
+
+        # The list form catches a chained item among sound ones.
+        with Pipeline("conditional"):
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "row_count > 0", src)
+            clean = notify("Clean", webhook_url="https://example.test")
+            with pytest.raises(PipelineError, match="already has input"):
+                gate.when(
+                    [
+                        clean,
+                        transform("Shape", rules=[{"type": "rename", "mapping": {"a": "b"}}])
+                        >> sink_file("Load", path="/out.csv"),
+                    ]
+                )
+
+    def test_condition_branch_rejects_targets_fed_from_elsewhere(self):
+        # A target already fed by another node makes skip propagation
+        # ambiguous (would the false branch skip a node the true path
+        # still feeds?), so it is refused for the same reason.
+        with Pipeline("conditional"):
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "row_count > 0", src)
+            fed = transform("Shape", src, rules=[{"type": "rename", "mapping": {"a": "b"}}])
+            with pytest.raises(PipelineError, match="already has input"):
+                gate.when(fed)
+
+    def test_condition_branches_still_converge_downstream(self):
+        # The supported shape stays supported: route each branch to its
+        # entry node, chain from it, and converge after the decision.
+        with Pipeline("conditional") as p:
+            src = source_db("Fetch", query="SELECT 1")
+            gate = condition_node("Gate", "row_count > 0", src)
+            shaped = transform("Shape", rules=[{"type": "rename", "mapping": {"a": "b"}}])
+            gate.when(shaped)
+            fallback = notify("Empty", webhook_url="https://example.test")
+            gate.otherwise(fallback)
+            final = sink_file("Load", path="/out.csv")
+            shaped >> final
+            fallback >> final
+
+        edges = {(f, t): c for f, t, c in p._edges}
+        assert edges[(gate.node_id, shaped.node_id)] is True
+        assert edges[(gate.node_id, fallback.node_id)] is False
+        assert (shaped.node_id, final.node_id) in edges
+        assert (fallback.node_id, final.node_id) in edges
+
     def test_condition_node_rejects_cross_pipeline_input(self):
         with Pipeline("first") as first:
             src = source_db("Fetch", query="SELECT 1")

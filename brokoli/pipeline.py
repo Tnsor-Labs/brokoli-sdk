@@ -868,6 +868,34 @@ class ConditionRef(NodeRef):
                         "Nested conditional routing is not supported; route to a "
                         "non-condition node instead."
                     )
+                # Guard against the >> chain footgun (brokoli-sdk#81):
+                # when(a >> b) hands us b, because >> returns its right-hand
+                # operand -- so the branch edge would land on the chain's
+                # tail and leave its head with no input at all. Nothing
+                # downstream would ever error; the sink just receives the
+                # gate's rows untransformed. A branch target that already
+                # has inputs is never what the author meant (a fed-from-
+                # elsewhere target makes skip propagation ambiguous too),
+                # so refuse anything with existing incoming edges other
+                # than this gate's own.
+                fed_from = sorted(
+                    {
+                        from_id
+                        for from_id, to_id, _ in self.pipeline._edges
+                        if to_id == ref.node_id and from_id != self.node_id
+                    }
+                )
+                if fed_from:
+                    raise PipelineError(
+                        f"Condition branch target {ref.node_id!r} already has "
+                        f"input(s) from {', '.join(repr(f) for f in fed_from)}. "
+                        "If you passed a '>>' chain to when()/otherwise(), note "
+                        "that '>>' returns its right-hand node, so the branch "
+                        "would route to the chain's tail and leave its head "
+                        "unconnected. Route to the branch's entry node and "
+                        "chain from it instead: shaped = transform(...); "
+                        "gate.when(shaped); shaped >> sink(...)."
+                    )
                 for existing_from, existing_to, existing_condition in self.pipeline._edges:
                     if existing_from == self.node_id and existing_to == ref.node_id:
                         if existing_condition != selected:
