@@ -37,6 +37,12 @@ class FakeBrokoli(BaseHTTPRequestHandler):
     # sdk#72: run_id -> how many detail GETs still answer 404 before the
     # row "becomes visible" -- the async-dispatch race, made deterministic.
     run_invisible_polls: dict = {}
+    # Device grant (#75): scripted poll answers, popped left to right; the
+    # issue endpoint hands out fixed codes. device_supported=False makes
+    # the endpoints 404 like an OSS server.
+    device_supported = True
+    device_poll_answers: list = []
+    device_starts = 0
     trigger_shape = "run_id"  # or "id" or "nested"
     triggered: list = []
     deployed: list = []
@@ -77,6 +83,22 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             token = f"tok-{cls.login_calls}"
             cls.tokens.add(token)
             return self._json(200, {"token": token})
+        if self.path == "/api/auth/oauth/device":
+            self._read_body()
+            if not cls.device_supported:
+                return self._json(404, {"error": "not found"})
+            cls.device_starts += 1
+            return self._json(200, {
+                "device_code": "devcode-1", "user_code": "BBBB-CCCC",
+                "verification_uri": "http://fake/#/device?code=BBBB-CCCC",
+                "interval": 0, "expires_in": 5,
+            })
+        if self.path == "/api/auth/oauth/device/poll":
+            self._read_body()
+            if not cls.device_supported:
+                return self._json(404, {"error": "not found"})
+            answer = cls.device_poll_answers.pop(0) if cls.device_poll_answers else {"status": "expired"}
+            return self._json(200, answer)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})
         if self.path.endswith("/run") and self.path.startswith("/api/pipelines/"):
@@ -201,6 +223,9 @@ def server():
     FakeBrokoli.runs = {}
     FakeBrokoli.run_statuses = {}
     FakeBrokoli.run_invisible_polls = {}
+    FakeBrokoli.device_supported = True
+    FakeBrokoli.device_poll_answers = []
+    FakeBrokoli.device_starts = 0
     FakeBrokoli.trigger_shape = "run_id"
     FakeBrokoli.triggered = []
     FakeBrokoli.deployed = []
