@@ -7,6 +7,11 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.8.0 - 2026-08-29
+
+One fix, minor bump: it is a behavior break called out below, and under
+this project's pre-1.0 rules breaks ride minor versions.
+
 ### Fixed
 
 - **`when()`/`otherwise()` refuse `>>` chains instead of silently
