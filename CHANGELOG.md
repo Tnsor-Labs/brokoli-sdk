@@ -7,6 +7,27 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.7.1 - 2026-08-29
+
+All three found by walking the new tutorial live against a fresh
+install, which is the release note and the moral.
+
+### Fixed
+
+- **`brokoli --version` tells the truth** (#78). Every release since
+  0.4.0 reported 0.4.0: the version string was hand-maintained and
+  never bumped again. Now single-sourced from the installed
+  distribution, with an ownership check so a source-tree import next to
+  some other installed brokoli does not borrow its number.
+- **`brokoli backfill` speaks the interval-native API** (#79). RFC3339
+  bounds went into the legacy date-only fields and the server refused
+  them; bounds now route by shape (bare dates keep their inclusive-day
+  meaning, timestamps use start/end), the plan response is rendered,
+  and legacy servers still get the old fields.
+- **`brokoli auth` output flushes before the wait** (#79). The code and
+  link printed, then the process polled for minutes; piped or
+  redirected stdout showed nothing until exit, which read as a hang.
+
 ## 0.7.0 - 2026-08-29
 
 ### Added
