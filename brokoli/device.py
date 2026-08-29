@@ -158,11 +158,18 @@ def forget_token(server: str) -> None:
 # ── the whole flow ─────────────────────────────────────────────────────
 
 
+def _echo_flush(line: str) -> None:
+    # The code and link print, then the process waits minutes for the
+    # browser -- without an explicit flush, piped or redirected stdout
+    # shows NOTHING until exit, which reads as a hang. Found live.
+    print(line, flush=True)
+
+
 def device_login(
     server: str,
     *,
     open_browser: bool = True,
-    echo: Callable[[str], None] = print,
+    echo: Callable[[str], None] = _echo_flush,
 ) -> str:
     """Run the grant end to end; store and return the token."""
     server = server.rstrip("/")
