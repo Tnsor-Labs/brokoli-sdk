@@ -76,7 +76,7 @@ def _resolve_version() -> str:
         this_file = Path(__file__).resolve()
         for f in dist.files or []:
             if str(f).endswith("brokoli/__init__.py"):
-                if Path(dist.locate_file(f)).resolve() == this_file:
+                if Path(str(dist.locate_file(f))).resolve() == this_file:
                     return dist.version
                 break
     except Exception:  # pragma: no cover - exotic packaging
