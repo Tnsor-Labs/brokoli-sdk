@@ -503,6 +503,7 @@ class Run:
         *,
         initial_poll_interval: float = 0.05,
         raise_on_failure: bool = False,
+        visibility_grace: float = 2.0,
     ) -> dict[str, Any]:
         """Poll until the run is terminal; return its final API object.
 
@@ -514,16 +515,36 @@ class Run:
         than the engine is; short runs now return almost immediately
         while long ones settle back to the same one-request-per-2s load.
 
+        For ``visibility_grace`` seconds after wait() starts, a 404 from
+        the status poll means "not visible yet", not "gone" (sdk#72): a
+        server that dispatches runs asynchronously can answer the trigger
+        with the run id a moment before the run row is readable, and the
+        fast first poll wins that race. After the grace window a 404 is
+        real and raises exactly as before.
+
         Raises ``TimeoutError`` (stdlib) if the run is still live when the
         deadline passes, and ``RunFailed`` for a non-success terminal
         status when ``raise_on_failure`` is set — with the full final
         object attached either way there is something to assert on.
         """
         deadline = time.monotonic() + timeout
+        grace_deadline = time.monotonic() + max(0.0, visibility_grace)
         interval = max(0.0, min(initial_poll_interval, poll_interval))
         last_status = ""
         while True:
-            detail = self.detail()
+            try:
+                detail = self.detail()
+            except APIError as exc:
+                if exc.status != 404 or time.monotonic() >= grace_deadline:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"run {self.id} never became visible within {timeout:.0f}s"
+                    ) from None
+                time.sleep(min(interval, remaining))
+                interval = min(interval * 1.6, poll_interval)
+                continue
             last_status = str(detail.get("status", ""))
             if last_status in TERMINAL_RUN_STATUSES:
                 if raise_on_failure and last_status != "success":

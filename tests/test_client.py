@@ -135,6 +135,28 @@ class TestRuns:
         detail = run.wait(timeout=10, poll_interval=0.05)
         assert detail["status"] == "success"
 
+    def test_wait_absorbs_the_visibility_race(self, server):
+        # sdk#72: the trigger response can carry the run id a beat before
+        # the run row is readable; the fast first polls must not treat
+        # that 404 as fatal.
+        client = self._client(server)
+        run = client.run("orders")
+        FakeBrokoli.run_statuses[run.id] = "success"
+        FakeBrokoli.run_invisible_polls[run.id] = 3
+        detail = run.wait(timeout=10, poll_interval=0.05)
+        assert detail["status"] == "success"
+        assert FakeBrokoli.run_invisible_polls[run.id] == 0
+
+    def test_wait_404_after_grace_is_fatal(self, server):
+        # The grace window is a window, not a blanket: a run that stays
+        # invisible past it is genuinely gone and must raise 404.
+        client = self._client(server)
+        run = client.run("orders")
+        del FakeBrokoli.run_statuses[run.id]  # never becomes visible
+        with pytest.raises(APIError) as exc_info:
+            run.wait(timeout=10, poll_interval=0.05, visibility_grace=0.2)
+        assert exc_info.value.status == 404
+
     def test_wait_timeout_names_last_status(self, server):
         client = self._client(server)
         run = client.run("orders")
