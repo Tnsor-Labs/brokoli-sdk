@@ -59,7 +59,32 @@ from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir, render_
 from brokoli.client import APIError, AuthError, Client, Run, RunFailed, TERMINAL_RUN_STATUSES
 from brokoli.async_client import AsyncClient, AsyncRun
 
-__version__ = "0.4.0"
+
+# Single-sourced from the installed distribution (pyproject's version):
+# every release since 0.4.0 shipped a --version that still said 0.4.0,
+# because this string was hand-maintained and never bumped again. The
+# ownership check matters: a source-tree import on a machine that ALSO
+# has some other brokoli version installed must not report that other
+# install's number -- only a distribution that actually provides this
+# very file gets to name the version.
+def _resolve_version() -> str:
+    try:
+        from importlib.metadata import distribution
+        from pathlib import Path
+
+        dist = distribution("brokoli")
+        this_file = Path(__file__).resolve()
+        for f in dist.files or []:
+            if str(f).endswith("brokoli/__init__.py"):
+                if Path(dist.locate_file(f)).resolve() == this_file:
+                    return dist.version
+                break
+    except Exception:  # pragma: no cover - exotic packaging
+        pass
+    return "0.0.0.dev0"
+
+
+__version__ = _resolve_version()
 __all__ = [
     # Core
     "Pipeline",
