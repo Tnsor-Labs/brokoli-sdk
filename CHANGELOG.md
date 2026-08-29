@@ -7,6 +7,35 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.6.0 - 2026-08-29
+
+### Changed
+
+- **`Pipeline(catch_up=...)` is real now** (#71). It joined the
+  serialize-or-reject refusal list when the server had no field for it;
+  the server grew per-interval catch-up (Brokoli core ADR-028, shipped
+  in v0.10.78), so the honest state changed: `catch_up=True` compiles to
+  the pipeline-level `catchup` field (omitted unless set -- older
+  fail-closed decoders 400 on unknown fields), requires a `schedule` at
+  construction, and deploy preflight requires the server to advertise
+  the `data_intervals` execution feature -- servers that advertise
+  features but not this one refuse with a message naming it, before
+  their strict decoder could 400 opaquely. `max_retries` and
+  `concurrency` stay refused. Code that previously CAUGHT the
+  `catch_up` refusal will no longer see it against any server; that
+  behavior change is this release's minor bump.
+
+### Fixed
+
+- **`Run.wait()` no longer treats the first-poll 404 as fatal** (#73,
+  fixes #72). A server that dispatches runs asynchronously can answer
+  the trigger with the run id a moment before the run row is readable,
+  and the deliberately fast 50ms first poll won that race. For
+  `visibility_grace` seconds (default 2) a 404 from the status poll
+  means "not visible yet"; after the window it raises exactly as
+  before. The async client's `watch()` had the same race and gets the
+  same treatment. Found live against a running server.
+
 ### Added
 
 - **`sink_db(truncate=True)`** clears an `overwrite` with `TRUNCATE`
