@@ -7,6 +7,23 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Fixed
+
+- **`when()`/`otherwise()` refuse `>>` chains instead of silently
+  misrouting them** (#81). `gate.when(transform(...) >> sink(...))`
+  routed the branch edge to the *sink* -- `>>` returns its right-hand
+  node -- and left the transform with no input at all. The pipeline
+  deployed and ran without a single error; the sink just received the
+  gate's rows untransformed. Both methods now raise a `PipelineError`
+  when the branch target already has incoming edges, naming the feeding
+  nodes and showing the explicit form (`shaped = transform(...);
+  gate.when(shaped); shaped >> sink(...)`). This also refuses targets
+  fed from elsewhere in the graph, where skip propagation was never
+  well defined. Converging branches downstream of the decision is
+  unaffected. Pre-1.0 breaking note: code that relied on the silent
+  misroute was already producing a wrong graph -- it now fails loudly
+  at authoring time instead.
+
 ## 0.7.1 - 2026-08-29
 
 All three found by walking the new tutorial live against a fresh
