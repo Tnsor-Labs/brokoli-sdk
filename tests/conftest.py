@@ -34,6 +34,9 @@ class FakeBrokoli(BaseHTTPRequestHandler):
     use_cursor_shape = True
     runs: dict = {}
     run_statuses: dict = {}
+    # sdk#72: run_id -> how many detail GETs still answer 404 before the
+    # row "becomes visible" -- the async-dispatch race, made deterministic.
+    run_invisible_polls: dict = {}
     trigger_shape = "run_id"  # or "id" or "nested"
     triggered: list = []
     deployed: list = []
@@ -174,6 +177,9 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             return self._json(200, preview)
         if self.path.startswith("/api/runs/"):
             run_id = self.path.split("/")[3]
+            if cls.run_invisible_polls.get(run_id, 0) > 0:
+                cls.run_invisible_polls[run_id] -= 1
+                return self._json(404, {"error": "run not found"})
             status = cls.run_statuses.get(run_id)
             if status is None:
                 return self._json(404, {"error": "run not found"})
@@ -194,6 +200,7 @@ def server():
     FakeBrokoli.use_cursor_shape = True
     FakeBrokoli.runs = {}
     FakeBrokoli.run_statuses = {}
+    FakeBrokoli.run_invisible_polls = {}
     FakeBrokoli.trigger_shape = "run_id"
     FakeBrokoli.triggered = []
     FakeBrokoli.deployed = []

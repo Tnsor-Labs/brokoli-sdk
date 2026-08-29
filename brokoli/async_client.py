@@ -43,9 +43,11 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, AsyncIterator, Callable
 
 from brokoli.client import (
+    APIError,
     Client,
     DEFAULT_SERVER,
     Run,
@@ -268,8 +270,17 @@ class AsyncRun:
 
         try:
             last_status: str | None = None
+            # Same first-poll visibility race as the sync Run.wait
+            # (sdk#72): tolerate 404 briefly before calling it fatal.
+            grace_deadline = time.monotonic() + 2.0
             while True:
-                detail = await self.detail()
+                try:
+                    detail = await self.detail()
+                except APIError as exc:
+                    if exc.status != 404 or time.monotonic() >= grace_deadline:
+                        raise
+                    await asyncio.sleep(min(0.2, poll_interval))
+                    continue
                 status = str(detail.get("status", ""))
                 if status != last_status:
                     last_status = status
