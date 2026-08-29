@@ -161,6 +161,11 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
         # runtime semantics.
         if "execution" in config:
             required.add("pagination-checkpoints")
+    # catch_up compiles to the pipeline-level catchup field (ADR-028):
+    # per-interval catch-up only exists on servers that advertise
+    # data_intervals, and older strict decoders reject the field outright.
+    if payload.get("catchup"):
+        required.add("data_intervals")
     return required
 
 

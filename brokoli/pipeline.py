@@ -1763,7 +1763,7 @@ class Pipeline:
         pid = _SLUG_COLLAPSE.sub("-", pid).strip("-")
         return pid
 
-    _UNSUPPORTED_OPTIONS = ("catch_up", "max_retries", "concurrency")
+    _UNSUPPORTED_OPTIONS = ("max_retries", "concurrency")
 
     def __init__(
         self,
@@ -1783,13 +1783,16 @@ class Pipeline:
         on_success: "str | dict[str, Any] | None" = None,
         on_failure: "str | dict[str, Any] | None" = None,
     ) -> None:
-        # Serialize-or-reject (brokoli-sdk#23 M2): these three were
-        # accepted for years and silently dropped from the compiled IR.
-        # The server has no fields for them, and since v0.10.11 its
-        # strict decoder would reject them anyway -- so accepting them
-        # locally was pure fiction. Reject with the honest state.
+        # Serialize-or-reject (brokoli-sdk#23 M2): these were accepted
+        # for years and silently dropped from the compiled IR. The server
+        # has no fields for them, and since v0.10.11 its strict decoder
+        # would reject them anyway -- so accepting them locally was pure
+        # fiction. Reject with the honest state. catch_up left this list
+        # when the server grew per-interval catch-up (ADR-028 / core
+        # #397): it now compiles to the pipeline's catchup field, and
+        # deploy preflight gates it on the server advertising the
+        # data_intervals execution feature.
         for option, value in (
-            ("catch_up", catch_up),
             ("max_retries", max_retries),
             ("concurrency", concurrency),
         ):
@@ -1797,9 +1800,15 @@ class Pipeline:
                 raise PipelineError(
                     f"Pipeline({option}=...) is not supported by the server "
                     "and was previously discarded without warning. Remove it; "
-                    "per-node retries= is real, and backfill exists as a "
-                    "server-side operation."
+                    "per-node retries= is real."
                 )
+        if catch_up and not schedule:
+            raise PipelineError(
+                "Pipeline(catch_up=True) needs a schedule: catch-up replays "
+                "missed schedule intervals, and without a schedule there is "
+                "no interval grid to replay."
+            )
+        self.catch_up = bool(catch_up)
         self.name = name
         self.pipeline_id = pipeline_id or self._generate_pipeline_id(name)
         self.description = description
@@ -2000,6 +2009,13 @@ class Pipeline:
 
         if self.schedule_timezone:
             result["schedule_timezone"] = self.schedule_timezone
+
+        # Omitted unless set: servers older than the data_intervals
+        # feature have fail-closed decoders that would 400 on the field.
+        # Deploy preflight refuses those servers first with a clear
+        # message (see brokoli/compatibility.py).
+        if self.catch_up:
+            result["catchup"] = True
 
         if self.sla_deadline:
             result["sla_deadline"] = self.sla_deadline

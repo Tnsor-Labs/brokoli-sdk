@@ -50,6 +50,13 @@ def _conditional_pipeline():
     return p
 
 
+def _catchup_pipeline():
+    with Pipeline("cu", pipeline_id="cu", schedule="0 * * * *", catch_up=True) as p:
+        src = source_file("Read", path="/tmp/in.csv", format="csv")
+        src >> sink_file("Save", path="/tmp/out.csv", format="csv")
+    return p
+
+
 def _paginated_pipeline():
     with Pipeline("paged", pipeline_id="paged") as p:
         src = source_api(
@@ -77,6 +84,10 @@ class TestRequiredFeatures:
             union("Merge", a, b) >> sink_file("S", path="/o.csv", format="csv")
         assert required_execution_features(up.to_json()) == {"union"}
 
+    def test_catch_up_requires_data_intervals(self):
+        p = _catchup_pipeline()
+        assert required_execution_features(p.to_json()) == {"data_intervals"}
+
     def test_plain_pipeline_requires_nothing(self):
         with Pipeline("plain", pipeline_id="plain") as p:
             src = source_file("Read", path="/tmp/in.csv", format="csv")
@@ -85,7 +96,13 @@ class TestRequiredFeatures:
 
 
 class TestFeatureGating:
-    FULL = ["conditional-routing", "dynamic-expansion", "union", "pagination-checkpoints"]
+    FULL = [
+        "conditional-routing",
+        "dynamic-expansion",
+        "union",
+        "pagination-checkpoints",
+        "data_intervals",
+    ]
 
     def test_absent_field_skips_feature_gating(self, monkeypatch):
         _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
@@ -109,6 +126,27 @@ class TestFeatureGating:
         )
         with pytest.raises(CompatibilityError, match="conditional-routing"):
             preflight_server_compatibility([_conditional_pipeline()], "http://s")
+
+    def test_catch_up_refused_by_pre_interval_server(self, monkeypatch):
+        # A server between v0.10.11 (feature advertising) and data
+        # intervals: advertises features, not this one. The refusal names
+        # the feature, BEFORE the server's fail-closed decoder would 400
+        # on the unknown catchup field.
+        _serve_capabilities(
+            monkeypatch,
+            {"supported_ir_versions": ["2.0", "2.1"],
+             "supported_execution_features": ["union", "conditional-routing"]},
+        )
+        with pytest.raises(CompatibilityError, match="data_intervals"):
+            preflight_server_compatibility([_catchup_pipeline()], "http://s")
+
+    def test_catch_up_accepted_by_advertising_server(self, monkeypatch):
+        _serve_capabilities(
+            monkeypatch,
+            {"supported_ir_versions": ["2.0", "2.1"],
+             "supported_execution_features": self.FULL},
+        )
+        preflight_server_compatibility([_catchup_pipeline()], "http://s")
 
     def test_legacy_flag_cannot_override_feature_mismatch(self, monkeypatch):
         _serve_capabilities(

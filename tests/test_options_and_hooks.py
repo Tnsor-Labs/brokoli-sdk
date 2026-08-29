@@ -21,7 +21,7 @@ from brokoli.exceptions import PipelineError
 
 
 class TestUnsupportedOptionsRejected:
-    @pytest.mark.parametrize("option", ["catch_up", "max_retries", "concurrency"])
+    @pytest.mark.parametrize("option", ["max_retries", "concurrency"])
     def test_option_raises_naming_itself(self, option):
         with pytest.raises(PipelineError, match=option):
             Pipeline("p", **{option: 1})
@@ -31,8 +31,37 @@ class TestUnsupportedOptionsRejected:
             src = source_file("A", path="/a.csv", format="csv")
             src >> sink_file("B", path="/b.csv", format="csv")
         payload = pipe.to_json()
-        for absent in ("catch_up", "max_retries", "concurrency"):
+        for absent in ("catch_up", "catchup", "max_retries", "concurrency"):
             assert absent not in payload
+
+
+class TestCatchUpIsRealNow:
+    """ADR-028 / core #397 phase 4: catch_up compiles instead of raising.
+
+    It serializes as the server's pipeline-level ``catchup`` field, only
+    when set (older fail-closed decoders 400 on unknown fields), and
+    deploy preflight requires the server to advertise the data_intervals
+    execution feature (see test_compatibility.py).
+    """
+
+    def _pipeline(self, **kwargs):
+        with Pipeline("cu", **kwargs) as p:
+            src = source_file("A", path="/a.csv", format="csv")
+            src >> sink_file("B", path="/b.csv", format="csv")
+        return p.to_json()
+
+    def test_catch_up_compiles_to_catchup(self):
+        payload = self._pipeline(schedule="0 * * * *", catch_up=True)
+        assert payload["catchup"] is True
+        assert "catch_up" not in payload
+
+    def test_absent_unless_true(self):
+        for kwargs in ({"schedule": "0 * * * *"}, {"schedule": "0 * * * *", "catch_up": False}):
+            assert "catchup" not in self._pipeline(**kwargs)
+
+    def test_catch_up_requires_a_schedule(self):
+        with pytest.raises(PipelineError, match="schedule"):
+            Pipeline("p", catch_up=True)
 
 
 class TestRealHooks:
