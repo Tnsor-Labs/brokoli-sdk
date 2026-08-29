@@ -7,6 +7,29 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.7.0 - 2026-08-29
+
+### Added
+
+- **`brokoli auth`: browser-confirmed login** (#76, closes #75). The
+  terminal requests a short code, opens the server's confirm page, and
+  receives a revocable `brk_` API token once you approve in a browser
+  that is already logged in -- no password ever touches the shell, its
+  history, or a CI log. The token lands in a per-user credentials file
+  (0600, keyed by server URL, `BROKOLI_CREDENTIALS` override) that
+  every CLI verb and `Client` picks up as the LAST auth fallback:
+  `BROKOLI_TOKEN`, `--api-key`, and a project environment's
+  `token_env` all win over stored credentials. `--no-browser` prints
+  the link instead of opening it.
+- **`Client(device_auth=True)`** runs the same grant from a library or
+  notebook, or reuses the stored token. It excludes the other auth
+  styles, and an expired token surfaces the 401 with "run brokoli auth
+  again" rather than re-prompting mid-request.
+- Servers without the grant (any open-source server, or an enterprise
+  server from before the feature) are refused up front naming the
+  alternatives -- the same capability-honesty rule as deploy
+  preflight.
+
 ## 0.6.0 - 2026-08-29
 
 ### Changed
