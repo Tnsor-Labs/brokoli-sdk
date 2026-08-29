@@ -10,9 +10,22 @@ Covers:
 """
 
 from brokoli import (
-    Pipeline, task, source, sink, sensor,
-    source_db, source_api, sink_db, sink_file, sink_api, code,
-    dbt, migrate, notify, transform, condition_node,
+    Pipeline,
+    task,
+    source,
+    sink,
+    sensor,
+    source_db,
+    source_api,
+    sink_db,
+    sink_file,
+    sink_api,
+    code,
+    dbt,
+    migrate,
+    notify,
+    transform,
+    condition_node,
 )
 from brokoli.validation import validate_pipeline
 
@@ -20,6 +33,7 @@ from brokoli.validation import validate_pipeline
 # ---------------------------------------------------------------------------
 # UNSET handling: explicit 0 must survive serialization
 # ---------------------------------------------------------------------------
+
 
 class TestUnsetSinkDB:
     def test_retries_zero_survives(self):
@@ -106,6 +120,7 @@ class TestUnoptedOptionalFieldsAreNotLeaked:
 class TestUnsetTaskDecorator:
     def test_retries_zero_survives(self):
         with Pipeline("test") as p:
+
             @task(retries=0, timeout=0)
             def clean(rows):
                 return rows
@@ -117,6 +132,7 @@ class TestUnsetTaskDecorator:
 
     def test_retries_omitted_not_in_config(self):
         with Pipeline("test") as p:
+
             @task
             def clean(rows):
                 return rows
@@ -130,6 +146,7 @@ class TestUnsetTaskDecorator:
 class TestUnsetSourceDecorator:
     def test_retries_and_timeout_zero_survive(self):
         with Pipeline("test") as p:
+
             @source(retries=0, timeout=0)
             def fetch():
                 return []
@@ -141,6 +158,7 @@ class TestUnsetSourceDecorator:
 
     def test_omitted_not_in_config(self):
         with Pipeline("test") as p:
+
             @source
             def fetch():
                 return []
@@ -154,6 +172,7 @@ class TestUnsetSourceDecorator:
 class TestUnsetSinkDecorator:
     def test_retries_and_timeout_zero_survive(self):
         with Pipeline("test") as p:
+
             @sink(retries=0, timeout=0)
             def push(rows):
                 pass
@@ -165,6 +184,7 @@ class TestUnsetSinkDecorator:
 
     def test_omitted_not_in_config(self):
         with Pipeline("test") as p:
+
             @sink
             def push(rows):
                 pass
@@ -194,6 +214,7 @@ class TestUnsetSourceDbAndApi:
 class TestSensorTimeout:
     def test_default_timeout_adds_buffer(self):
         with Pipeline("test") as p:
+
             @sensor(poll_interval=10, timeout=100)
             def ready():
                 return True
@@ -205,6 +226,7 @@ class TestSensorTimeout:
 
     def test_none_timeout_means_no_timeout(self):
         with Pipeline("test") as p:
+
             @sensor(poll_interval=10, timeout=None)
             def ready():
                 return True
@@ -219,6 +241,7 @@ class TestSensorTimeout:
 # ---------------------------------------------------------------------------
 # Capability model
 # ---------------------------------------------------------------------------
+
 
 class TestCapabilities:
     def test_source_db_has_source_capability(self):
@@ -237,8 +260,7 @@ class TestCapabilities:
     def test_dbt_and_migrate_are_sources(self):
         with Pipeline("test") as p:
             dbt("D", command="run", project_dir="/dbt")
-            migrate("M", source_conn_id="a", target_conn_id="b",
-                     query="SELECT 1", table="t")
+            migrate("M", source_conn_id="a", target_conn_id="b", query="SELECT 1", table="t")
         for node in p.to_json()["nodes"]:
             assert "source" in node["capabilities"], node
 
@@ -253,6 +275,7 @@ class TestCapabilities:
 
     def test_decorated_source_has_source_capability(self):
         with Pipeline("test") as p:
+
             @source
             def fetch():
                 return []
@@ -264,6 +287,7 @@ class TestCapabilities:
 
     def test_decorated_sink_has_sink_capability(self):
         with Pipeline("test") as p:
+
             @sink
             def push(rows):
                 pass
@@ -275,6 +299,7 @@ class TestCapabilities:
 
     def test_decorated_task_is_compute(self):
         with Pipeline("test") as p:
+
             @task
             def clean(rows):
                 return rows
@@ -308,6 +333,7 @@ class TestValidationUsesCapabilities:
     def test_pipeline_with_no_source_warns(self):
         with Pipeline("test") as p:
             from brokoli.pipeline import _make_id
+
             nid = _make_id("compute_only")
             p._add_node(nid, "code", "Compute Only", {"language": "python", "script": "x = 1"})
         vr = validate_pipeline(p)
@@ -321,6 +347,7 @@ class TestValidationUsesCapabilities:
 
     def test_pipeline_with_decorated_source_does_not_warn(self):
         with Pipeline("test") as p:
+
             @source
             def fetch():
                 return []
@@ -334,6 +361,7 @@ class TestValidationUsesCapabilities:
 # IR version
 # ---------------------------------------------------------------------------
 
+
 class TestIRVersion:
     def test_ir_version_present(self):
         with Pipeline("test") as p:
@@ -345,6 +373,7 @@ class TestIRVersion:
 # ---------------------------------------------------------------------------
 # Decorator wrapper fan-out deduplication
 # ---------------------------------------------------------------------------
+
 
 class TestWrapperFanOutDedup:
     def test_fan_out_to_same_wrapper_twice_creates_one_node(self):
@@ -365,6 +394,7 @@ class TestWrapperFanOutDedup:
 
     def test_reusing_wrapper_across_separate_rshift_calls_creates_one_node(self):
         with Pipeline("test") as p:
+
             @task
             def w(rows):
                 return rows
@@ -404,6 +434,7 @@ class TestWrapperFanOutDedup:
 
     def test_source_wrapper_reused_across_fan_out(self):
         with Pipeline("test") as p:
+
             @source
             def fetch():
                 return []

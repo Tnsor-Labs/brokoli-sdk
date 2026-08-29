@@ -38,15 +38,19 @@ class TestRenameShorthandNormalisation:
     """Accept the {from, to} shorthand and rewrite it to {mapping}."""
 
     def test_from_to_shorthand_is_normalised(self):
-        out = _parse_transform_rules([
-            {"type": "rename", "from": "hire_date", "to": "start_date"},
-        ])
+        out = _parse_transform_rules(
+            [
+                {"type": "rename", "from": "hire_date", "to": "start_date"},
+            ]
+        )
         assert out == [{"type": "rename", "mapping": {"hire_date": "start_date"}}]
 
     def test_rename_columns_alias_also_normalised(self):
-        out = _parse_transform_rules([
-            {"type": "rename_columns", "from": "x", "to": "y"},
-        ])
+        out = _parse_transform_rules(
+            [
+                {"type": "rename_columns", "from": "x", "to": "y"},
+            ]
+        )
         assert out == [{"type": "rename_columns", "mapping": {"x": "y"}}]
 
     def test_canonical_shape_is_untouched(self):
@@ -78,9 +82,11 @@ class TestRenameValidation:
 
     def test_mapping_wrong_type_raises(self):
         with pytest.raises(ValueError, match="requires non-empty 'mapping'"):
-            _parse_transform_rules([
-                {"type": "rename", "mapping": "not_a_dict"},
-            ])
+            _parse_transform_rules(
+                [
+                    {"type": "rename", "mapping": "not_a_dict"},
+                ]
+            )
 
 
 class TestTransformNodeIntegration:
@@ -93,15 +99,16 @@ class TestTransformNodeIntegration:
         # dict, so the payload eventually POSTed to /api/pipelines
         # already has the canonical shape the engine expects.
         with Pipeline("test") as p:
-            n = transform("Clean", rules=[
-                {"type": "rename", "from": "ts", "to": "event_time"},
-            ])
+            n = transform(
+                "Clean",
+                rules=[
+                    {"type": "rename", "from": "ts", "to": "event_time"},
+                ],
+            )
 
         node = p._nodes[n.node_id]
         assert node["type"] == "transform"
-        assert node["config"]["rules"] == [
-            {"type": "rename", "mapping": {"ts": "event_time"}}
-        ]
+        assert node["config"]["rules"] == [{"type": "rename", "mapping": {"ts": "event_time"}}]
 
     def test_transform_with_wrong_rename_shape_fails_at_build_time(self):
         # If the user builds a rename rule with neither `mapping` nor

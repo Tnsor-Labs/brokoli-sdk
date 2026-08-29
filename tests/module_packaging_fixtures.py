@@ -29,6 +29,7 @@ def _double_normalize(row: dict) -> dict:
 # --- Task functions (undecorated -- decorated manually in tests via
 #     ``task(fx.some_func)`` so each test controls the active Pipeline) ---
 
+
 def clean_no_refs(rows):
     """References nothing outside its own body -- pins legacy behavior."""
     return [r for r in rows if r]

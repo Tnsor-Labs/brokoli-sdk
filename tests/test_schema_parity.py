@@ -29,9 +29,7 @@ from brokoli import (
     transform,
 )
 
-SCHEMA = json.loads(
-    (Path(__file__).parent / "fixtures" / "pipeline-ir-2.1.json").read_text()
-)
+SCHEMA = json.loads((Path(__file__).parent / "fixtures" / "pipeline-ir-2.1.json").read_text())
 
 MODULE_CONSTANT = 500
 
@@ -65,8 +63,7 @@ def test_kitchen_sink_pipeline_validates():
         src = source_api(
             "Fetch",
             url="https://api.example.com/x",
-            pagination=offset_pages(page_size=100, max_records=MODULE_CONSTANT)
-            .with_execution(
+            pagination=offset_pages(page_size=100, max_records=MODULE_CONSTANT).with_execution(
                 max_concurrency=4,
                 page_max_retries=3,
                 page_retry_backoff="exponential",
@@ -83,9 +80,7 @@ def test_kitchen_sink_pipeline_validates():
         clean(src) >> gate
 
         keep = transform("Keep", rules=[{"type": "rename", "mapping": {"a": "b"}}])
-        alert = notify(
-            "Alert", notify_type="webhook", webhook_url="https://hooks.example/x"
-        )
+        alert = notify("Alert", notify_type="webhook", webhook_url="https://hooks.example/x")
         gate.when(keep)
         gate.otherwise(alert)
         keep >> sink_file("Save", path="/tmp/out.csv", format="csv")

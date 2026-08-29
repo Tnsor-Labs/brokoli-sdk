@@ -3,14 +3,23 @@
 import json
 import pytest
 from brokoli import (
-    Pipeline, source_db, sink_db, sink_file,
-    source, sink, filter, map, validate, sensor,
+    Pipeline,
+    source_db,
+    sink_db,
+    sink_file,
+    source,
+    sink,
+    filter,
+    map,
+    validate,
+    sensor,
 )
 
 
 class TestSourceDecorator:
     def test_basic(self):
         with Pipeline("test") as p:
+
             @source
             def fetch_data():
                 return [{"id": 1}]
@@ -25,6 +34,7 @@ class TestSourceDecorator:
 
     def test_with_name(self):
         with Pipeline("test") as p:
+
             @source("Stripe Charges", timeout=60)
             def fetch_charges():
                 return []
@@ -37,6 +47,7 @@ class TestSourceDecorator:
 
     def test_rshift_chaining(self):
         with Pipeline("test") as p:
+
             @source
             def fetch():
                 return [{"x": 1}]
@@ -67,6 +78,7 @@ class TestSinkDecorator:
 
     def test_with_name(self):
         with Pipeline("test") as p:
+
             @sink("Push to HubSpot", retries=3)
             def push(rows):
                 pass
@@ -99,6 +111,7 @@ class TestFilterDecorator:
 
     def test_with_name(self):
         with Pipeline("test") as p:
+
             @filter("Active Users Only")
             def active(row):
                 return row.get("active")
@@ -128,6 +141,7 @@ class TestMapDecorator:
 
     def test_with_name(self):
         with Pipeline("test") as p:
+
             @map("Add Domain")
             def add_domain(row):
                 row["d"] = "test"
@@ -159,6 +173,7 @@ class TestValidateDecorator:
 
     def test_warn_mode(self):
         with Pipeline("test") as p:
+
             @validate(on_failure="warn")
             def soft_check(rows):
                 return len(rows) > 0
@@ -174,6 +189,7 @@ class TestValidateDecorator:
 class TestSensorDecorator:
     def test_basic(self):
         with Pipeline("test") as p:
+
             @sensor(poll_interval=30, timeout=600)
             def wait_for_file():
                 return True
@@ -192,6 +208,7 @@ class TestSensorDecorator:
 
     def test_with_name(self):
         with Pipeline("test") as p:
+
             @sensor("Wait for API", poll_interval=10, timeout=120)
             def api_ready():
                 return True
@@ -218,18 +235,21 @@ class TestSensorDecorator:
 class TestDecoratorErrors:
     def test_decorator_outside_pipeline_raises(self):
         with pytest.raises(RuntimeError, match="must be used inside"):
+
             @source
             def bad():
                 return []
 
     def test_filter_outside_pipeline_raises(self):
         with pytest.raises(RuntimeError, match="must be used inside"):
+
             @filter
             def bad(row):
                 return True
 
     def test_map_outside_pipeline_raises(self):
         with pytest.raises(RuntimeError, match="must be used inside"):
+
             @map
             def bad(row):
                 return row
@@ -239,6 +259,7 @@ class TestJsonSerialization:
     def test_all_decorators_produce_valid_json(self):
         """Every decorator-generated node must be JSON-serializable."""
         with Pipeline("full-test") as p:
+
             @source
             def fetch():
                 return [{"id": 1}]

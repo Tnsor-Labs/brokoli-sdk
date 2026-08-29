@@ -13,11 +13,27 @@ started (RFC §11-13).
 import pytest
 
 from brokoli import (
-    Pipeline, task,
-    source_api, source_db, source_file, transform, join, migrate, dbt,
-    sink_db, quality_check, code, notify, condition_node,
+    Pipeline,
+    task,
+    source_api,
+    source_db,
+    source_file,
+    transform,
+    join,
+    migrate,
+    dbt,
+    sink_db,
+    quality_check,
+    code,
+    notify,
+    condition_node,
     union,
-    NodeRef, ConditionRef, ScalarRef, ArtifactRef, DatasetRef, CollectionRef,
+    NodeRef,
+    ConditionRef,
+    ScalarRef,
+    ArtifactRef,
+    DatasetRef,
+    CollectionRef,
 )
 from brokoli.pipeline import _build_union_node
 from brokoli.validation import validate_pipeline
@@ -26,6 +42,7 @@ from brokoli.validation import validate_pipeline
 # ---------------------------------------------------------------------------
 # Typed refs returned from node-building functions
 # ---------------------------------------------------------------------------
+
 
 class TestTypedRefsReturned:
     def test_source_api_dataset_response_returns_dataset_ref(self):
@@ -97,12 +114,15 @@ class TestTypedRefsReturned:
             assert type(quality_check("Q", input=src, rules=["not_null(id)"])) is NodeRef
             assert type(code("C", script="x = 1")) is NodeRef
             assert type(notify("N", webhook_url="https://hook")) is NodeRef
-            assert type(condition_node("Gate", expression="row_count > 0", input=src)) is ConditionRef
+            assert (
+                type(condition_node("Gate", expression="row_count > 0", input=src)) is ConditionRef
+            )
 
 
 # ---------------------------------------------------------------------------
 # @task.expand()
 # ---------------------------------------------------------------------------
+
 
 class TestExpand:
     def test_expand_compiles_to_single_node_with_expansion_policy(self):
@@ -135,9 +155,7 @@ class TestExpand:
 
     def test_expand_with_key_serializes_reference_not_executable_code(self):
         with Pipeline("test") as p:
-            files = CollectionRef(
-                source_api("List Files", url="https://x").node_id, p
-            )
+            files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
 
             def stable_key(item):
                 """Use the file path as the stable instance key."""
@@ -158,6 +176,7 @@ class TestExpand:
 
     def test_expand_requires_at_least_one_kwarg(self):
         with Pipeline("test") as p:
+
             @task("Parse")
             def parse(rows):
                 return rows
@@ -178,9 +197,7 @@ class TestExpand:
 
     def test_expand_validates_via_validate_pipeline(self):
         with Pipeline("test") as p:
-            files = CollectionRef(
-                source_api("List Files", url="https://x").node_id, p
-            )
+            files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
 
             @task("Parse")
             def parse(rows):
@@ -195,9 +212,7 @@ class TestExpand:
         """Unlike the zero-arg auto-call cache on __call__, .expand() is
         an explicit invocation and always registers a new node."""
         with Pipeline("test") as p:
-            files = CollectionRef(
-                source_api("List Files", url="https://x").node_id, p
-            )
+            files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
 
             @task("Parse")
             def parse(rows):
@@ -213,6 +228,7 @@ class TestExpand:
 # ---------------------------------------------------------------------------
 # union() / .collect(mode="union")
 # ---------------------------------------------------------------------------
+
 
 class TestUnionAndCollect:
     def test_union_function_compiles_to_union_node(self):
@@ -234,9 +250,7 @@ class TestUnionAndCollect:
 
     def test_collect_on_collection_ref_compiles_to_same_node_shape(self):
         with Pipeline("test") as p:
-            files = CollectionRef(
-                source_api("List Files", url="https://x").node_id, p
-            )
+            files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
             collected = files.collect(mode="union")
 
         assert type(collected) is DatasetRef
@@ -292,6 +306,7 @@ class TestUnionAndCollect:
 # ---------------------------------------------------------------------------
 # DatasetRef.map() / .filter() vs @map / @filter decorators
 # ---------------------------------------------------------------------------
+
 
 class TestDatasetMapFilter:
     def test_dataset_map_compiles_to_distinct_node_type(self):

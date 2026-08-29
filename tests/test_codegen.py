@@ -114,6 +114,7 @@ class TestSchemaHints:
     def test_source_api_has_hint(self):
         with Pipeline("test") as p:
             from brokoli import source_api
+
             source_api("API", url="https://example.com")
 
         nodes = p.to_json()["nodes"]

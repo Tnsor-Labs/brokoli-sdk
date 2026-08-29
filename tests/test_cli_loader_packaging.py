@@ -17,7 +17,7 @@ import textwrap
 from brokoli.cli import load_pipeline_from_file
 
 PIPELINE_WITH_IMPORTS = textwrap.dedent(
-    '''
+    """
     import json
     from datetime import timezone
 
@@ -37,7 +37,7 @@ PIPELINE_WITH_IMPORTS = textwrap.dedent(
             return json.loads(json.dumps([_scale(r) for r in rows]))
 
         src >> work(src) >> sink_file("Save", path="/tmp/out.csv", format="csv")
-    '''
+    """
 )
 
 

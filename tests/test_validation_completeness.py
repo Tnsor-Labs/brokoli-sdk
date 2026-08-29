@@ -71,15 +71,13 @@ class TestEnumValidation:
 
     def test_retry_backoff_typo_caught(self):
         with Pipeline("r") as p:
-            source_db("A", conn_id="c", query="select 1",
-                      retries=2, retry_backoff="expnential")
+            source_db("A", conn_id="c", query="select 1", retries=2, retry_backoff="expnential")
         errs = " ".join(_errors(p))
         assert "retry_backoff" in errs
 
     def test_valid_enums_pass(self):
         with Pipeline("ok") as p:
-            a = source_db("A", conn_id="c", query="select 1",
-                          retries=2, retry_backoff="linear")
+            a = source_db("A", conn_id="c", query="select 1", retries=2, retry_backoff="linear")
             b = source_db("B", conn_id="c", query="select 2")
             j = join("J", left=a, right=b, on="id", how="full_outer")
             j >> sink_file("S", path="/o.json", format="json")

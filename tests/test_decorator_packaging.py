@@ -24,6 +24,7 @@ def local_helper(row):
     """Same-module helper -- must be inlined, not imported."""
     return dict(row, seen=True)
 
+
 from brokoli import Pipeline, sensor, sink, source, task
 from brokoli import filter as brokoli_filter
 from brokoli import map as brokoli_map
@@ -144,7 +145,5 @@ class TestRequiresModules:
             "    src >> work(src)\n"
         )
         pipelines = load_pipeline_from_file(str(f))
-        cfg = [
-            n for n in pipelines[0].to_json()["nodes"] if n["name"] == "Work"
-        ][0]["config"]
+        cfg = [n for n in pipelines[0].to_json()["nodes"] if n["name"] == "Work"][0]["config"]
         assert cfg["package"]["requires_modules"] == ["yaml"]

@@ -140,21 +140,33 @@ class Client:
         api_key: str | None = None,
         username: str | None = None,
         password: str | None = None,
+        device_auth: bool = False,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         if not server:
             raise ValueError(f"server is required, e.g. Client({DEFAULT_SERVER!r})")
         if api_key and (username or password):
             raise ValueError("pass api_key OR username/password, not both")
+        if device_auth and (api_key or username or password):
+            raise ValueError("device_auth excludes the other auth styles")
         if (username is None) != (password is None):
             raise ValueError("username and password go together")
         self.server = server.rstrip("/")
         self.timeout = timeout
         self._username = username
         self._password = password
-        self._static = bool(api_key)
         self._lock = threading.Lock()
         self._token = api_key or ""
+        if device_auth:
+            # A token stored by ``brokoli auth`` (#75), or the interactive
+            # grant right now: the browser confirms, this process waits.
+            # The received token is a session token; when it eventually
+            # expires, the resulting 401 says to run brokoli auth again
+            # rather than silently re-prompting mid-request.
+            from brokoli import device
+
+            self._token = device.load_token(self.server) or device.device_login(self.server)
+        self._static = bool(self._token)
 
     @classmethod
     def from_env(cls, server: str | None = None, **kwargs: Any) -> "Client":

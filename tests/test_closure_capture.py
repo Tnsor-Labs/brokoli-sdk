@@ -126,7 +126,7 @@ class TestClosureCaptureThroughCLILoader:
         f = tmp_path / "factory_pipeline.py"
         f.write_text(
             textwrap.dedent(
-                '''
+                """
                 from brokoli import Pipeline, task, source_file, sink_file
 
                 def make(threshold):
@@ -138,12 +138,10 @@ class TestClosureCaptureThroughCLILoader:
                 with Pipeline("factory-loader", pipeline_id="factory-loader") as p:
                     src = source_file("Read", path="/tmp/in.csv", format="csv")
                     src >> make(42)(src) >> sink_file("Save", path="/tmp/out.csv", format="csv")
-                '''
+                """
             )
         )
         pipelines = load_pipeline_from_file(str(f))
-        cfg = [
-            n for n in pipelines[0].to_json()["nodes"] if n["name"] == "Work"
-        ][0]["config"]
+        cfg = [n for n in pipelines[0].to_json()["nodes"] if n["name"] == "Work"][0]["config"]
         assert "threshold = 42" in cfg["script"]
         assert "threshold" in cfg["package"]["included"]

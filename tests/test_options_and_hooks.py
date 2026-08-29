@@ -74,13 +74,18 @@ class TestRealHooks:
     def test_url_string_becomes_webhook_hook(self):
         payload = self._pipeline(on_failure="https://hooks.example/fail")
         assert payload["hooks"]["on_failure"] == {
-            "type": "webhook", "url": "https://hooks.example/fail", "enabled": True,
+            "type": "webhook",
+            "url": "https://hooks.example/fail",
+            "enabled": True,
         }
 
     def test_dict_hook_passes_through(self):
         payload = self._pipeline(
-            on_success={"type": "slack", "url": "https://hooks.slack.example/x",
-                        "extra": {"channel": "wins"}}
+            on_success={
+                "type": "slack",
+                "url": "https://hooks.slack.example/x",
+                "extra": {"channel": "wins"},
+            }
         )
         hook = payload["hooks"]["on_success"]
         assert hook["type"] == "slack" and hook["extra"] == {"channel": "wins"}

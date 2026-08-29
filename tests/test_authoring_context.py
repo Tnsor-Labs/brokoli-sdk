@@ -26,11 +26,9 @@ def _names(p):
 class TestNesting:
     def test_inner_block_restores_outer_on_exit(self):
         with Pipeline("outer") as outer:
-
             source_api("O1", url="https://x")
 
             with Pipeline("inner") as inner:
-
                 source_api("I1", url="https://x")
 
                 assert Pipeline.current() is inner
@@ -53,7 +51,6 @@ class TestThreadIsolation:
 
         def build(tag):
             with Pipeline(tag) as p:
-
                 source_api(f"{tag}-A", url="https://x")
 
                 # Both threads are now simultaneously inside their own
@@ -80,7 +77,6 @@ class TestAsyncIsolation:
     def test_concurrent_tasks_do_not_cross_contaminate(self):
         async def build(tag, mine, theirs):
             with Pipeline(tag) as p:
-
                 source_api(f"{tag}-A", url="https://x")
 
                 # Hand off so the sibling task authors while we're

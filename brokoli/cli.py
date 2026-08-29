@@ -19,6 +19,7 @@ import yaml
 
 import brokoli
 from brokoli.client import DEFAULT_SERVER
+from brokoli import device
 from brokoli.compatibility import preflight_server_compatibility
 from brokoli.exceptions import CompatibilityError, DeployError, ValidationError
 from brokoli.ir import canonical_json, diff_ir, ir_digest, normalize_ir
@@ -109,6 +110,12 @@ def _resolve_target(
         token = os.getenv(str(env_cfg["token_env"]), "")
         if token:
             auth = f"Bearer {token}"
+    if not auth:
+        # Last in line: a token stored by ``brokoli auth`` (#75). Explicit
+        # BROKOLI_TOKEN, --api-key, or a project token_env always wins.
+        stored = device.load_token(server)
+        if stored:
+            auth = f"Bearer {stored}"
     return server.rstrip("/"), auth
 
 
@@ -885,6 +892,17 @@ def backfill_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def auth_cmd(args: argparse.Namespace) -> int:
+    """Authorize this terminal via the browser (device grant, #75)."""
+    server, _ = _resolve_target(args, "auth")
+    try:
+        device.device_login(server, open_browser=not args.no_browser)
+    except device.DeviceAuthError as exc:
+        print(f"auth failed: {exc}")
+        return 1
+    return 0
+
+
 def main() -> None:
     """CLI entry point. This is the only place that catches exceptions and exits."""
     parser = argparse.ArgumentParser(prog="brokoli", description="Brokoli Python SDK CLI")
@@ -892,6 +910,17 @@ def main() -> None:
         "--version", "-V", action="version", version=f"brokoli {brokoli.__version__}"
     )
     sub = parser.add_subparsers(dest="command")
+
+    # auth
+    ap = sub.add_parser(
+        "auth", help="Authorize this terminal via the browser (no password in the shell)"
+    )
+    ap.add_argument("--server", default=None, help="Brokoli server URL")
+    ap.add_argument("--env", default=None, help="Named environment from the project config")
+    ap.add_argument(
+        "--no-browser", action="store_true", help="Print the link instead of opening a browser"
+    )
+    ap.set_defaults(func=auth_cmd)
 
     # deploy
     dp = sub.add_parser("deploy", help="Deploy pipeline(s) to a Brokoli server")

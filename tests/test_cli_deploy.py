@@ -57,9 +57,7 @@ def test_deploy_lists_once_and_matches_pipeline_id_before_name(monkeypatch):
 
     cli.deploy(_args())
 
-    list_remote.assert_called_once_with(
-        "http://server", "Bearer secret", operation="deploy"
-    )
+    list_remote.assert_called_once_with("http://server", "Bearer secret", operation="deploy")
     upsert.assert_called_once_with(
         "http://server",
         "Bearer secret",
@@ -151,11 +149,7 @@ def test_name_match_with_different_logical_id_is_a_conflict(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_list_remote_pipelines",
-        Mock(
-            return_value=[
-                {"id": "orders-v1", "pipeline_id": "orders-v1", "name": "orders"}
-            ]
-        ),
+        Mock(return_value=[{"id": "orders-v1", "pipeline_id": "orders-v1", "name": "orders"}]),
     )
     upsert = Mock()
     monkeypatch.setattr(cli, "_upsert_pipeline", upsert)
@@ -246,20 +240,14 @@ def test_diff_rejects_multiple_locals_targeting_one_remote(monkeypatch):
     )
 
     with pytest.raises(DeployError, match="target remote pipeline"):
-        cli.diff_cmd(
-            argparse.Namespace(
-                file="pipelines.py", server="http://server", api_key=""
-            )
-        )
+        cli.diff_cmd(argparse.Namespace(file="pipelines.py", server="http://server", api_key=""))
 
 
 def test_invalid_pipeline_is_reported_before_remote_lookup(monkeypatch):
     pipeline = FakePipeline("orders", "orders")
     _install_pipelines(monkeypatch, [pipeline])
     result = Mock(valid=False, errors=["invalid node"])
-    monkeypatch.setattr(
-        "brokoli.validation.validate_pipeline", Mock(return_value=result)
-    )
+    monkeypatch.setattr("brokoli.validation.validate_pipeline", Mock(return_value=result))
     list_remote = Mock()
     monkeypatch.setattr(cli, "_list_remote_pipelines", list_remote)
     upsert = Mock()

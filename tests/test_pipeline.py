@@ -175,13 +175,16 @@ class TestNodeTypes:
 
     def test_quality_check_string_rules(self):
         with Pipeline("test") as p:
-            n = quality_check("QC", rules=[
-                "not_null(email)",
-                "unique(id)",
-                "min(amount, 0)",
-                "range(score, 0, 100)",
-                "row_count(min=100)",
-            ])
+            n = quality_check(
+                "QC",
+                rules=[
+                    "not_null(email)",
+                    "unique(id)",
+                    "min(amount, 0)",
+                    "range(score, 0, 100)",
+                    "row_count(min=100)",
+                ],
+            )
 
         node = p._nodes[n.node_id]
         rules = node["config"]["rules"]
@@ -298,6 +301,7 @@ class TestTaskDecorator:
 
     def test_task_with_retries(self):
         with Pipeline("test") as p:
+
             @task("Risky", retries=3, retry_backoff="exponential")
             def risky(df):
                 return df
@@ -309,6 +313,7 @@ class TestTaskDecorator:
 
     def test_task_no_args_decorator(self):
         with Pipeline("test") as p:
+
             @task
             def my_func(df):
                 return df
@@ -320,6 +325,7 @@ class TestTaskDecorator:
 
     def test_task_source_extraction(self):
         with Pipeline("test") as p:
+
             @task("Feature Eng")
             def build_features(df):
                 """Compute features."""
@@ -438,10 +444,12 @@ class TestComplexPipeline:
             checked = quality_check("Validate", enriched, rules=["unique(id)", "not_null(email)"])
 
             gate = condition_node("Has data?", "row_count > 0", checked)
-            gate.when([
-                sink_db("Write DWH", table="customer_360"),
-                sink_file("S3 Backup", path="/backup/c360.csv"),
-            ])
+            gate.when(
+                [
+                    sink_db("Write DWH", table="customer_360"),
+                    sink_file("S3 Backup", path="/backup/c360.csv"),
+                ]
+            )
             gate.otherwise(sink_api("Alert", url="https://hooks.slack.com"))
 
         data = p.to_json()
@@ -457,9 +465,13 @@ class TestNewNodeTypes:
     def test_dbt_node(self):
         with Pipeline("dbt-test") as p:
             raw = source_db("Extract", query="SELECT * FROM raw.events", conn_id="warehouse")
-            models = dbt("Transform Models", command="build",
-                        select="staging.events marts.revenue",
-                        project_dir="/app/dbt", target="prod")
+            models = dbt(
+                "Transform Models",
+                command="build",
+                select="staging.events marts.revenue",
+                project_dir="/app/dbt",
+                target="prod",
+            )
             raw >> models
 
         data = p.to_json()
@@ -485,11 +497,14 @@ class TestNewNodeTypes:
     def test_notify_slack(self):
         with Pipeline("notify-test") as p:
             data_node = source_api("Fetch", url="https://api.example.com/data")
-            alert = notify("Alert Team", input=data_node,
-                          notify_type="slack",
-                          webhook_url="https://hooks.slack.com/services/T/B/X",
-                          message="Pipeline {{pipeline}} done: {{rows}} rows",
-                          channel="#data-alerts")
+            alert = notify(
+                "Alert Team",
+                input=data_node,
+                notify_type="slack",
+                webhook_url="https://hooks.slack.com/services/T/B/X",
+                message="Pipeline {{pipeline}} done: {{rows}} rows",
+                channel="#data-alerts",
+            )
 
         data = p.to_json()
         assert len(data["nodes"]) == 2
@@ -512,12 +527,14 @@ class TestNewNodeTypes:
 
     def test_migrate_node(self):
         with Pipeline("migrate-test") as p:
-            migrate("Sync Users",
-                    source_uri="postgres://src/db",
-                    target_uri="postgres://dst/db",
-                    query="SELECT * FROM users WHERE updated > '2024-01-01'",
-                    table="users_mirror",
-                    mode="upsert")
+            migrate(
+                "Sync Users",
+                source_uri="postgres://src/db",
+                target_uri="postgres://dst/db",
+                query="SELECT * FROM users WHERE updated > '2024-01-01'",
+                table="users_mirror",
+                mode="upsert",
+            )
 
         data = p.to_json()
         node = data["nodes"][0]
@@ -618,8 +635,7 @@ class TestNewNodeTypes:
                 gate.otherwise([])
 
         assert not any(
-            from_id == gate.node_id and to_id == untouched.node_id
-            for from_id, to_id, _ in p._edges
+            from_id == gate.node_id and to_id == untouched.node_id for from_id, to_id, _ in p._edges
         )
 
     def test_condition_branch_rollback_removes_lazy_nodes(self):
@@ -641,6 +657,7 @@ class TestNewNodeTypes:
         assert lazy._auto_ref is None
 
         with Pipeline("foreign lazy") as foreign_pipeline:
+
             @task("Foreign Lazy")
             def foreign_lazy(rows):
                 return rows
@@ -660,22 +677,33 @@ class TestNewNodeTypes:
         with Pipeline("Full Analytics", schedule="0 5 * * *") as p:
             raw = source_db("Extract Events", query="SELECT * FROM raw.events", conn_id="warehouse")
 
-            models = dbt("dbt Build", command="build",
-                        select="staging.events marts.revenue",
-                        project_dir="/app/dbt", target="prod")
+            models = dbt(
+                "dbt Build",
+                command="build",
+                select="staging.events marts.revenue",
+                project_dir="/app/dbt",
+                target="prod",
+            )
             raw >> models
 
-            qc = quality_check("Validate", input=models, rules=[
-                "not_null(revenue)",
-                "min(revenue, 0)",
-                "row_count(min=1)",
-            ])
+            qc = quality_check(
+                "Validate",
+                input=models,
+                rules=[
+                    "not_null(revenue)",
+                    "min(revenue, 0)",
+                    "row_count(min=1)",
+                ],
+            )
 
-            done = notify("Slack: Done", input=qc,
-                         notify_type="slack",
-                         webhook_url="https://hooks.slack.com/T/B/X",
-                         message="Analytics pipeline completed: {{rows}} rows",
-                         channel="#analytics")
+            done = notify(
+                "Slack: Done",
+                input=qc,
+                notify_type="slack",
+                webhook_url="https://hooks.slack.com/T/B/X",
+                message="Analytics pipeline completed: {{rows}} rows",
+                channel="#analytics",
+            )
 
         data = p.to_json()
         assert len(data["nodes"]) == 4
@@ -698,8 +726,14 @@ class TestRetryTimeoutParity:
     def test_previously_bare_factory_gets_all_four(self):
         # transform() had none of these before.
         with Pipeline("t") as p:
-            n = transform("Clean", rules=[{"type": "drop_columns", "columns": ["x"]}],
-                          retries=2, retry_backoff="exponential", retry_delay=500, timeout=45)
+            n = transform(
+                "Clean",
+                rules=[{"type": "drop_columns", "columns": ["x"]}],
+                retries=2,
+                retry_backoff="exponential",
+                retry_delay=500,
+                timeout=45,
+            )
 
         config = p._nodes[n.node_id]["config"]
         assert config["max_retries"] == 2
@@ -712,8 +746,7 @@ class TestRetryTimeoutParity:
         # retry_backoff (inconsistent with source_db/source_api) and no
         # retry_delay/timeout at all.
         with Pipeline("t") as p:
-            n = sink_db("Write", table="t", conn_id="pg",
-                       retries=3, retry_delay=1000, timeout=60)
+            n = sink_db("Write", table="t", conn_id="pg", retries=3, retry_delay=1000, timeout=60)
 
         config = p._nodes[n.node_id]["config"]
         assert config["max_retries"] == 3
@@ -731,15 +764,21 @@ class TestRetryTimeoutParity:
 
     def test_code_timeout(self):
         with Pipeline("t") as p:
-            n = code_node("Run", script="output_data = {'columns': columns, 'rows': rows}",
-                     timeout=90)
+            n = code_node(
+                "Run", script="output_data = {'columns': columns, 'rows': rows}", timeout=90
+            )
 
         assert p._nodes[n.node_id]["config"]["timeout"] == 90
 
     def test_sink_api_batch_size_and_basic_auth(self):
         with Pipeline("t") as p:
-            n = sink_api("Post", url="https://example.test/ingest",
-                        batch_size=250, auth_user="svc", auth_password="secret")
+            n = sink_api(
+                "Post",
+                url="https://example.test/ingest",
+                batch_size=250,
+                auth_user="svc",
+                auth_password="secret",
+            )
 
         config = p._nodes[n.node_id]["config"]
         assert config["batch_size"] == 250
@@ -766,9 +805,16 @@ class TestRetryTimeoutParity:
 
     def test_migrate_dialect_chunk_size_create_table(self):
         with Pipeline("t") as p:
-            n = migrate("Copy", source_conn_id="a", target_conn_id="b",
-                       query="SELECT 1", table="dst",
-                       dialect="postgres", chunk_size=1000, create_table=True)
+            n = migrate(
+                "Copy",
+                source_conn_id="a",
+                target_conn_id="b",
+                query="SELECT 1",
+                table="dst",
+                dialect="postgres",
+                chunk_size=1000,
+                create_table=True,
+            )
 
         config = p._nodes[n.node_id]["config"]
         assert config["dialect"] == "postgres"
@@ -783,18 +829,35 @@ class TestRetryTimeoutParity:
             b = source_api("B", url="https://x", retries=1, timeout=5)
             c = source_file("C", path="/x.csv", retries=1, timeout=5)
             j = join("J", left=a, right=b, on="id", retries=1, timeout=5)
-            t = transform("T", input=j, rules=[{"type": "drop_columns", "columns": ["y"]}],
-                          retries=1, timeout=5)
+            t = transform(
+                "T",
+                input=j,
+                rules=[{"type": "drop_columns", "columns": ["y"]}],
+                retries=1,
+                timeout=5,
+            )
             q = quality_check("Q", input=t, rules=["not_null(id)"], retries=1, timeout=5)
-            cd = code_node("CD", input=q, script="output_data={'columns':columns,'rows':rows}",
-                      retries=1, timeout=5)
+            cd = code_node(
+                "CD",
+                input=q,
+                script="output_data={'columns':columns,'rows':rows}",
+                retries=1,
+                timeout=5,
+            )
             sd = sink_db("SD", input=cd, table="t", conn_id="pg", retries=1, timeout=5)
             sf = sink_file("SF", input=cd, path="/out.csv", retries=1, timeout=5)
             sa = sink_api("SA", input=cd, url="https://y", retries=1, timeout=5)
             dt = dbt("DT", input=cd, retries=1, timeout=5)
             notify("NT", input=dt, webhook_url="https://z", retries=1, timeout=5)
-            migrate("MG", source_conn_id="pg", target_conn_id="pg",
-                   query="SELECT 1", table="t2", retries=1, timeout=5)
+            migrate(
+                "MG",
+                source_conn_id="pg",
+                target_conn_id="pg",
+                query="SELECT 1",
+                table="t2",
+                retries=1,
+                timeout=5,
+            )
 
         data = p.to_json()
         assert len(data["nodes"]) == 13
