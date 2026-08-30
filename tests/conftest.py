@@ -46,12 +46,18 @@ class FakeBrokoli(BaseHTTPRequestHandler):
     trigger_shape = "run_id"  # or "id" or "nested"
     triggered: list = []
     deployed: list = []
+    task_stored_digests: set = set()
     logs_shape = "list"  # or "wrapped"
     log_entries: list = []
     dlq_entries: dict = {}  # pipeline id -> list of entries
     last_dlq_query: dict = {}
     previews: dict = {}  # "run_id/node_id" -> {"columns": ..., "rows": ...}
     deleted_pipeline_ids: list = []
+    # ADR-031 task bundles: content-addressed POST bodies are re-hashed and
+    # matched against the claimed digest, exactly like a real server.
+    task_uploads: list = []  # ("created"|"repeat", digest)
+    task_bundle_max_bytes = 64 * 1024 * 1024
+    events: list = []  # "upload <digest>" / "create" / "update" ordering log
 
     def log_message(self, *args):  # noqa: D102 - silence test output
         pass
@@ -108,6 +114,28 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             return self._json(200, answer)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})
+        if self.path.startswith("/api/task-bundles/"):
+            digest = self.path.split("/")[3]
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length)
+            import hashlib
+
+            actual = "sha256:" + hashlib.sha256(body).hexdigest()
+            if actual != digest:
+                return self._json(
+                    400,
+                    {"error": f"digest mismatch: claimed {digest[:16]}… got {actual[:16]}…"},
+                )
+            if len(body) > cls.task_bundle_max_bytes:
+                return self._json(413, {"error": "archive exceeds size cap"})
+            if digest in cls.task_stored_digests:
+                cls.task_uploads.append(("repeat", digest))
+                cls.events.append(f"upload {digest}")
+                return self._json(200, {"digest": digest, "status": "unchanged"})
+            cls.task_stored_digests.add(digest)
+            cls.task_uploads.append(("created", digest))
+            cls.events.append(f"upload {digest}")
+            return self._json(201, {"digest": digest, "status": "stored"})
         if self.path.endswith("/run") and self.path.startswith("/api/pipelines/"):
             pid = self.path.split("/")[3]
             body = self._read_body()
@@ -124,6 +152,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             cls.run_statuses[run_id] = "cancelled"
             return self._json(200, {"status": "cancelled"})
         if self.path == "/api/pipelines":
+            cls.events.append("create")
             payload = self._read_body()
             payload["id"] = f"created-{len(cls.deployed) + 1}"
             cls.deployed.append(("POST", payload))
@@ -140,6 +169,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             return self._json(401, {"error": "unauthenticated"})
         if self.path.startswith("/api/pipelines/"):
             payload = self._read_body()
+            cls.events.append("update")
             cls.deployed.append(("PUT", payload))
             return self._json(200, payload)
         return self._json(404, {"error": "nope"})
@@ -242,6 +272,9 @@ def server():
     FakeBrokoli.last_dlq_query = {}
     FakeBrokoli.previews = {}
     FakeBrokoli.deleted_pipeline_ids = []
+    FakeBrokoli.task_uploads = []
+    FakeBrokoli.task_stored_digests = set()
+    FakeBrokoli.events = []
 
     httpd = HTTPServer(("127.0.0.1", 0), FakeBrokoli)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)

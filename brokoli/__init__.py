@@ -9,6 +9,7 @@ from brokoli.pipeline import (
     DatasetRef,
     CollectionRef,
 )
+from brokoli.taskbundle import TaskBundle
 from brokoli.decorators import (
     task,
     condition,
@@ -140,6 +141,10 @@ __all__ = [
     # Dataset-manifest combination (brokoli-sdk#2) -- see also
     # CollectionRef.collect(mode="union")
     "union",
+    # Task-bundle packaging (ADR-031): the content-addressed project
+    # archive @task(package="bundle") compiles to; deployers upload these
+    # before the referencing pipeline.
+    "TaskBundle",
     # source_api pagination DSL (declarative config only -- see brokoli.pagination)
     "offset_pages",
     "cursor_pages",

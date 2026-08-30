@@ -99,6 +99,19 @@ def task(
         @task(package="module")
         def clean(rows):
             return heavy_helpers.transform(rows)
+
+    Pass ``package="bundle"`` (ADR-031) to package the task's *project* —
+    its containing module, its relative imports, and its same-repo helper
+    modules — into a versioned, content-addressed task bundle uploaded to
+    the server before deployment. The node config then carries a
+    ``task_bundle`` reference instead of a ``script``, and the engine
+    mounts the bundle and runs it in its own import namespace. This is the
+    mode for tasks that live in a real project tree (where module-verbatim
+    or function-inlining can't reach the files they need). v1 scope is
+    project files only: a task whose module imports a third-party package
+    fails packaging with a clear, named error rather than deploying
+    something that would fail at run time. Requires a server that
+    advertises the ``task-bundles`` execution feature.
     """
     config: dict = {}
     if retries is not UNSET and retries is not None:

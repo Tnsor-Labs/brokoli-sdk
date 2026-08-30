@@ -173,6 +173,12 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
             script = config.get("script") or ""
             if "emit(" in script or "begin_emit(" in script:
                 required.add("code-streaming-emit")
+            if "task_bundle" in config:
+                # ADR-031: task bundles need a server that can resolve and
+                # mount them; an older server (no such feature) must be
+                # refused at deploy, never reach "deployed, then fails at
+                # run time".
+                required.add("task-bundles")
     # catch_up compiles to the pipeline-level catchup field (ADR-028):
     # per-interval catch-up only exists on servers that advertise
     # data_intervals, and older strict decoders reject the field outright.

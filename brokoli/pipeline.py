@@ -338,7 +338,7 @@ def _extract_func_source(
 #   in the same file) but always works, for cases auto-detection can't
 #   handle (e.g. a legitimately whole helper module of dependencies).
 
-_PACKAGE_MODES: tuple[str, ...] = ("auto", "module")
+_PACKAGE_MODES: tuple[str, ...] = ("auto", "module", "bundle")
 
 
 def _is_json_serializable(value: Any) -> bool:
@@ -1208,20 +1208,39 @@ class _TaskWrapper:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
 
-        func_source, package_meta = _package_task_source(self._func, self._package)
+        if self._package == "bundle":
+            # ADR-031: package the task's project and reference it by
+            # digest. The node config carries the task_bundle object in
+            # place of script (mutually exclusive on the server); the
+            # archive rides sideband on the Pipeline and is uploaded by
+            # the deployer before the pipeline is created/updated.
+            import brokoli.taskbundle as taskbundle
 
-        call_script = TASK_WRAPPER_TEMPLATE.format(
-            func_source=func_source,
-            func_name=self._func.__name__,
-        )
+            bundle = taskbundle.package_task_project(self._func, self._name)
+            self._pipeline._attach_bundle(bundle)
+            config: dict[str, Any] = {
+                "language": "python",
+                "task_bundle": {
+                    "digest": bundle.digest,
+                    "format": taskbundle.FORMAT,
+                },
+                **self._config,
+            }
+        else:
+            func_source, package_meta = _package_task_source(self._func, self._package)
 
-        config: dict[str, Any] = {
-            "language": "python",
-            "script": call_script,
-            **self._config,
-        }
-        if package_meta is not None:
-            config["package"] = package_meta
+            call_script = TASK_WRAPPER_TEMPLATE.format(
+                func_source=func_source,
+                func_name=self._func.__name__,
+            )
+
+            config = {
+                "language": "python",
+                "script": call_script,
+                **self._config,
+            }
+            if package_meta is not None:
+                config["package"] = package_meta
 
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
@@ -1863,6 +1882,23 @@ class Pipeline:
         self._branches: dict[str, dict[str, list[str]]] = {}
         self._node_order: list[str] = []
         self._node_id_counters: dict[str, int] = {}
+        # Task bundles attached by @task(package="bundle") (ADR-031): the
+        # content-addressed project archives the code nodes reference by
+        # digest. They ride sideband -- to_json() stays pure IR -- and are
+        # uploaded ahead of the pipeline by deployers (Client.deploy / brokoli deploy).
+        self._bundles: dict[str, "Any"] = {}
+
+    def _attach_bundle(self, bundle: "Any") -> None:
+        """Register a packaged task bundle with this pipeline (deduplicated
+        by digest, so the same bundle referenced by several nodes uploads
+        exactly once)."""
+        self._bundles[bundle.digest] = bundle
+
+    @property
+    def task_bundles(self) -> tuple["Any", ...]:
+        """The packaged task bundles this pipeline carries, keyed in
+        document order: one per distinct digest."""
+        return tuple(self._bundles.values())
 
     def __repr__(self) -> str:
         return f"Pipeline({self.name!r}, nodes={len(self._nodes)}, edges={len(self._edges)})"

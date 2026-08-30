@@ -139,9 +139,52 @@ def _validate_quality_check(name: str, config: dict[str, Any], result: Validatio
         result.add_error(name, "rules", "Quality Check requires at least one rule")
 
 
+_TASK_BUNDLE_FORMAT = "task-bundle/1"
+
+
+def _is_bundle_digest(value: str) -> bool:
+    """Content addresses have the shape core's taskbundle.IsDigest accepts:
+    ``sha256:`` + 64 lowercase hex chars."""
+    if not value.startswith("sha256:"):
+        return False
+    return len(value) == 71 and all(c in "0123456789abcdef" for c in value[7:])
+
+
 def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) -> None:
-    if not config.get("script"):
-        result.add_error(name, "script", "Code node requires a 'script'")
+    script = config.get("script")
+    task_bundle = config.get("task_bundle")
+    if not script and not task_bundle:
+        result.add_error(name, "script", "Code node requires a 'script' or a 'task_bundle'")
+    if script and task_bundle:
+        result.add_error(
+            name,
+            "task_bundle",
+            "Code node cannot carry both a 'script' and a 'task_bundle' "
+            "(they are mutually exclusive on the server)",
+        )
+
+    # task_bundle references a content-addressed project archive (ADR-031).
+    # Validate the same shape the server's validator accepts -- digest and
+    # format are the whole address.
+    if isinstance(task_bundle, dict) and task_bundle:
+        digest = task_bundle.get("digest")
+        if not isinstance(digest, str) or not _is_bundle_digest(digest):
+            result.add_error(
+                name, "task_bundle.digest",
+                "task_bundle.digest must be a content address of the form "
+                "'sha256:' + 64 hex characters",
+            )
+        fmt = task_bundle.get("format")
+        if fmt != _TASK_BUNDLE_FORMAT:
+            result.add_error(
+                name, "task_bundle.format",
+                f"task_bundle.format must be {_TASK_BUNDLE_FORMAT!r}",
+            )
+    elif task_bundle is not None and not isinstance(task_bundle, dict):
+        result.add_error(
+            name, "task_bundle",
+            "'task_bundle' must be an object with 'digest' and 'format'",
+        )
 
     # ``.expand()`` (brokoli-sdk#2) attaches an "expansion" policy block
     # to an otherwise-ordinary "code" node instead of introducing a new
