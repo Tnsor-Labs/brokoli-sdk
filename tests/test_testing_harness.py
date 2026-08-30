@@ -1,5 +1,4 @@
-"""brokoli-sdk#15 M2: the local test harness. brokoli-sdk#57 item 9:
-live_pipeline, at the bottom of this file.
+"""brokoli-sdk#15 M2: the local test harness.
 
 Proves you can assert graph shape and task logic, and pin IR, without a
 server -- and that the harness inspects rather than executes the DAG.
@@ -7,16 +6,8 @@ server -- and that the harness inspects rather than executes the DAG.
 
 import pytest
 
-from brokoli import Client, Pipeline, source_api, source_file, transform, sink_db, task, map as bmap
-from brokoli.client import APIError
-from brokoli.testing import Graph, graph, run_task, ir_snapshot, assert_stable_ir, live_pipeline
-
-from conftest import FakeBrokoli
-
-
-def _static_client(server):
-    FakeBrokoli.tokens.add("static-key")
-    return Client(server, api_key="static-key")
+from brokoli import Pipeline, source_api, transform, sink_db, task, map as bmap
+from brokoli.testing import Graph, graph, run_task, ir_snapshot, assert_stable_ir
 
 
 def _build():
@@ -122,79 +113,3 @@ class TestIRSnapshot:
 
         with pytest.raises(AssertionError, match="not stable across rebuilds"):
             assert_stable_ir(flaky)
-
-
-class TestLivePipeline:
-    def _pipeline(self, name="Live Test", pipeline_id="live-test"):
-        with Pipeline(name, pipeline_id=pipeline_id) as p:
-            source_file("Src", path="/tmp/x.csv", format="csv")
-        return p
-
-    def test_deploys_under_a_unique_id_and_runs(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = _static_client(server)
-        pipeline = self._pipeline()
-
-        with live_pipeline(client, pipeline, validate=False) as lp:
-            assert lp.pipeline_id.startswith("live-test-")
-            assert lp.pipeline_id != "live-test"
-            assert lp.id.startswith("created-")
-
-            run = lp.run()
-            assert FakeBrokoli.triggered[0]["pipeline"] == lp.id
-            assert run.status() == "success"
-
-    def test_deletes_on_exit_even_after_an_exception(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = _static_client(server)
-
-        with pytest.raises(RuntimeError, match="boom"):
-            with live_pipeline(client, self._pipeline(), validate=False) as lp:
-                deployed_id = lp.id
-                raise RuntimeError("boom")
-
-        assert FakeBrokoli.deleted_pipeline_ids == [deployed_id]
-
-    def test_cleanup_false_leaves_it_deployed(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = _static_client(server)
-
-        with live_pipeline(client, self._pipeline(), validate=False, cleanup=False) as lp:
-            deployed_id = lp.id
-
-        assert FakeBrokoli.deleted_pipeline_ids == []
-        # Still resolvable -- never got deleted.
-        assert client.pipeline(deployed_id)["id"] == deployed_id
-
-    def test_two_live_pipelines_from_the_same_builder_do_not_collide(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = _static_client(server)
-
-        with live_pipeline(client, self._pipeline(), validate=False) as first:
-            with live_pipeline(client, self._pipeline(), validate=False) as second:
-                assert first.pipeline_id != second.pipeline_id
-
-    def test_delete_pipeline_tolerates_already_gone(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = _static_client(server)
-
-        with live_pipeline(client, self._pipeline(), validate=False) as lp:
-            deployed_id = lp.id
-            client.delete_pipeline(deployed_id)  # deleted early, inside the test
-
-        # No error propagates from teardown's own delete of an
-        # already-gone pipeline.
-        assert FakeBrokoli.deleted_pipeline_ids == [deployed_id]
-
-    def test_delete_pipeline_raises_for_a_real_404(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = _static_client(server)
-
-        with pytest.raises(APIError):
-            client.delete_pipeline("never-deployed")

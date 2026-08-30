@@ -5,66 +5,6 @@ format is loosely [Keep a Changelog](https://keepachangelog.com/); the
 project is pre-1.0, so a breaking change can land in a minor release —
 those are called out explicitly.
 
-## Unreleased
-
-### Added
-
-- **Observability reads** (#57 item 7). `client.dlq(pipeline, include_resolved=, limit=)`
-  and `Run.node_preview(node_id)` — the dead-letter queue and per-node
-  output sample the CLI already exposes, now importable. Cancel/retry
-  verification scripts assert DLQ emptiness and spot-check row values
-  without exporting through a sink first.
-
-- **Async run-ops client** (#57 item 8, `brokoli.AsyncClient`/`AsyncRun`).
-  A parallel async counterpart to `Client`/`Run` -- not a background-
-  thread wrapper around them. Every REST method delegates to a plain
-  `Client` via `asyncio.to_thread` (one tested HTTP implementation, not
-  two); `AsyncRun.watch()`/`.wait()` are genuinely async-native, backed
-  by a real WebSocket subscription against the server's SODP endpoint
-  for near-instant run-completion notice instead of a fixed poll
-  interval.
-  - `AsyncClient(server, api_key=...)` / `.from_env(...)` -- same
-    construction as `Client`.
-  - `client.run(pipeline, params=...) -> AsyncRun`;
-    `AsyncRun.watch(poll_interval=...)` (an async generator yielding the
-    run's detail on every status change) and `.wait(timeout,
-    poll_interval, raise_on_failure=...)`, `.status()`, `.node_runs()`,
-    `.cancel()`, `.logs(...)`.
-  - The SODP subscription is a signal to refetch, not the value
-    returned -- every yield is a real REST `detail()` call, since the
-    pushed state is a narrower rollup than the full run object. A REST
-    poll runs alongside the subscription regardless, because a `blocked`
-    run (failed cross-pipeline dependency check) never emits an event at
-    all and would otherwise wait forever.
-  - The push path requires the new `watch` extra: `pip install
-    "brokoli[watch]"` (installs `sodp-client`). Without it, or if the
-    connection doesn't complete within a bounded timeout, `watch()`/
-    `wait()` still work correctly -- they fall back to plain polling,
-    exactly like the sync `Run.wait()`. Every other `AsyncClient` method
-    needs no extra dependency either way.
-
-- **Live-test fixture** (#57 item 9, `brokoli.testing.live_pipeline`).
-  Formalizes what every verification script under #57 reimplemented by
-  hand: deploy a pipeline under a unique id (dodging the server's slug
-  uniqueness index on concurrent or repeated runs), yield a handle to
-  fire real runs against it, and delete it from the server on exit --
-  whether the test passed, failed, or raised.
-  - `with live_pipeline(client, pipeline) as lp: lp.run().wait(...)`.
-    `cleanup=False` skips the delete, for inspecting a failing live test
-    afterward.
-  - New `Client.delete_pipeline(pipeline)` (and the `AsyncClient`
-    equivalent) backing the fixture's teardown -- the SDK had every
-    other pipeline CRUD operation already, this was the missing one.
-
-### Fixed
-
-- **`Client.deploy()` on a fresh credentialed client.** `preflight_server_compatibility`
-  and `validate_pipeline` read the auth header directly instead of going
-  through `_request`, so a `username`/`password` client whose first-ever
-  call was `deploy()` sent those two requests unauthenticated and failed
-  with a misleading "verify your token" error despite valid credentials.
-  Lazy login now triggers before either call.
-
 ## 0.4.0 — 2026-08-15
 
 ### Added

@@ -9,8 +9,10 @@ urllib seam would test the fake.
 
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -21,7 +23,164 @@ from brokoli.client import (
     RunFailed,
 )
 
-from conftest import FakeBrokoli, PIPES
+
+class FakeBrokoli(BaseHTTPRequestHandler):
+    """A scriptable stand-in for the server's run-ops API surface.
+
+    Class-level state is reset per test by the fixture. Handlers mirror
+    the REAL response-shape quirks (run_id vs id, bare list vs cursor
+    page) because absorbing those is exactly what the client promises.
+    """
+
+    tokens: set[str] = set()
+    require_auth = True
+    login_calls = 0
+    expire_after_logins = 0  # tokens minted before this many logins are dead
+    pipelines_pages: list = []
+    pipelines_flat: list = []
+    use_cursor_shape = True
+    runs: dict = {}
+    run_statuses: dict = {}
+    run_visibility_404s = 0
+    trigger_shape = "run_id"  # or "id" or "nested"
+    triggered: list = []
+    deployed: list = []
+    logs_shape = "list"  # or "wrapped"
+    log_entries: list = []
+
+    def log_message(self, *args):  # noqa: D102 - silence test output
+        pass
+
+    def _json(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authed(self):
+        if not type(self).require_auth:
+            return True
+        header = self.headers.get("Authorization", "")
+        return header.removeprefix("Bearer ") in type(self).tokens
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(length)) if length else {}
+
+    def do_POST(self):
+        cls = type(self)
+        if self.path == "/api/auth/login":
+            body = self._read_body()
+            cls.login_calls += 1
+            if body.get("password") != "right":
+                return self._json(401, {"error": "bad credentials"})
+            token = f"tok-{cls.login_calls}"
+            cls.tokens.add(token)
+            return self._json(200, {"token": token})
+        if not self._authed():
+            return self._json(401, {"error": "unauthenticated"})
+        if self.path.endswith("/run") and self.path.startswith("/api/pipelines/"):
+            pid = self.path.split("/")[3]
+            body = self._read_body()
+            run_id = f"run-{len(cls.triggered) + 1}"
+            cls.triggered.append({"pipeline": pid, "body": body, "run_id": run_id})
+            cls.run_statuses.setdefault(run_id, "success")
+            if cls.trigger_shape == "id":
+                return self._json(201, {"id": run_id})
+            if cls.trigger_shape == "nested":
+                return self._json(201, {"run": {"id": run_id}})
+            return self._json(201, {"run_id": run_id})
+        if self.path.endswith("/cancel"):
+            run_id = self.path.split("/")[3]
+            cls.run_statuses[run_id] = "cancelled"
+            return self._json(200, {"status": "cancelled"})
+        if self.path == "/api/pipelines":
+            payload = self._read_body()
+            payload["id"] = f"created-{len(cls.deployed) + 1}"
+            cls.deployed.append(("POST", payload))
+            return self._json(201, payload)
+        return self._json(404, {"error": "nope"})
+
+    def do_PUT(self):
+        cls = type(self)
+        if not self._authed():
+            return self._json(401, {"error": "unauthenticated"})
+        if self.path.startswith("/api/pipelines/"):
+            payload = self._read_body()
+            cls.deployed.append(("PUT", payload))
+            return self._json(200, payload)
+        return self._json(404, {"error": "nope"})
+
+    def do_GET(self):
+        cls = type(self)
+        if not self._authed():
+            return self._json(401, {"error": "unauthenticated"})
+        if self.path.startswith("/api/pipelines"):
+            if not cls.use_cursor_shape:
+                return self._json(200, cls.pipelines_flat)
+            # Cursor shape: serve successive pages per `after` param.
+            after = ""
+            if "after=" in self.path:
+                after = self.path.split("after=")[1].split("&")[0]
+            index = int(after) if after else 0
+            page = cls.pipelines_pages[index] if index < len(cls.pipelines_pages) else []
+            has_next = index + 1 < len(cls.pipelines_pages)
+            return self._json(
+                200,
+                {"items": page, "has_next": has_next, "cursor": str(index + 1)},
+            )
+        if self.path.startswith("/api/runs/") and self.path.endswith("/logs"):
+            entries = cls.log_entries
+            if cls.logs_shape == "wrapped":
+                return self._json(200, {"logs": entries})
+            return self._json(200, entries)
+        if self.path.startswith("/api/runs/"):
+            run_id = self.path.split("/")[3]
+            if cls.run_visibility_404s:
+                cls.run_visibility_404s -= 1
+                return self._json(404, {"error": "run not found"})
+            status = cls.run_statuses.get(run_id)
+            if status is None:
+                return self._json(404, {"error": "run not found"})
+            detail = {"id": run_id, "status": status}
+            detail.update(cls.runs.get(run_id, {}))
+            return self._json(200, detail)
+        return self._json(404, {"error": "nope"})
+
+
+@pytest.fixture()
+def server():
+    # Reset scriptable state so tests can't bleed into each other.
+    FakeBrokoli.tokens = set()
+    FakeBrokoli.require_auth = True
+    FakeBrokoli.login_calls = 0
+    FakeBrokoli.pipelines_pages = []
+    FakeBrokoli.pipelines_flat = []
+    FakeBrokoli.use_cursor_shape = True
+    FakeBrokoli.runs = {}
+    FakeBrokoli.run_statuses = {}
+    FakeBrokoli.run_visibility_404s = 0
+    FakeBrokoli.trigger_shape = "run_id"
+    FakeBrokoli.triggered = []
+    FakeBrokoli.deployed = []
+    FakeBrokoli.logs_shape = "list"
+    FakeBrokoli.log_entries = []
+
+    httpd = HTTPServer(("127.0.0.1", 0), FakeBrokoli)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+
+
+PIPES = [
+    {"id": "uuid-1", "pipeline_id": "orders", "name": "Orders"},
+    {"id": "uuid-2", "pipeline_id": "events", "name": "Events"},
+]
 
 
 def _static_client(server):
@@ -135,6 +294,21 @@ class TestRuns:
         detail = run.wait(timeout=10, poll_interval=0.05)
         assert detail["status"] == "success"
 
+    def test_wait_retries_run_visibility_race(self, server):
+        client = self._client(server)
+        run = client.run("orders")
+        FakeBrokoli.run_visibility_404s = 3
+        detail = run.wait(timeout=5, poll_interval=0.05)
+        assert detail["status"] == "success"
+
+    def test_wait_does_not_hide_real_404(self, server):
+        client = self._client(server)
+        run = client.run("orders")
+        FakeBrokoli.run_statuses.pop(run.id)
+        FakeBrokoli.run_visibility_404s = 100
+        with pytest.raises(APIError, match="run not found"):
+            run.wait(timeout=0.2, poll_interval=0.05, visibility_grace=0.01)
+
     def test_wait_timeout_names_last_status(self, server):
         client = self._client(server)
         run = client.run("orders")
@@ -170,48 +344,6 @@ class TestRuns:
         with ThreadPoolExecutor(max_workers=8) as pool:
             runs = list(pool.map(lambda _: client.run("orders"), range(16)))
         assert len({r.id for r in runs}) == 16
-
-    def test_node_preview(self, server):
-        client = self._client(server)
-        run = client.run("orders")
-        FakeBrokoli.previews[f"{run.id}/aggregate"] = {
-            "columns": ["region", "total"],
-            "rows": [{"region": "us", "total": 42}],
-        }
-        preview = run.node_preview("aggregate")
-        assert preview["columns"] == ["region", "total"]
-        assert preview["rows"][0]["total"] == 42
-
-    def test_node_preview_unavailable_is_404(self, server):
-        client = self._client(server)
-        run = client.run("orders")
-        with pytest.raises(APIError) as exc_info:
-            run.node_preview("never-ran")
-        assert exc_info.value.status == 404
-
-
-class TestObservability:
-    def _client(self, server):
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = PIPES
-        return _static_client(server)
-
-    def test_dlq_resolves_pipeline_and_returns_entries(self, server):
-        FakeBrokoli.dlq_entries["uuid-1"] = [
-            {"id": "dlq-1", "node_id": "sink", "error": "constraint violation"}
-        ]
-        client = self._client(server)
-        entries = client.dlq("orders")
-        assert entries[0]["error"] == "constraint violation"
-
-    def test_dlq_empty_by_default(self, server):
-        client = self._client(server)
-        assert client.dlq("orders") == []
-
-    def test_dlq_query_params(self, server):
-        client = self._client(server)
-        client.dlq("orders", include_resolved=True, limit=10)
-        assert FakeBrokoli.last_dlq_query == {"limit": "10", "include_resolved": "true"}
 
 
 class TestDeploy:
@@ -257,20 +389,6 @@ class TestDeploy:
         with pytest.raises(APIError, match="ambiguous"):
             client.deploy(self._pipeline(), validate=False)
         assert FakeBrokoli.deployed == []
-
-    def test_first_call_deploy_on_credentialed_client_logs_in_first(self, server):
-        # Deliberately does NOT monkeypatch preflight_server_compatibility:
-        # it and validate_pipeline read _auth_header() directly rather than
-        # going through _request, so a credentialed client whose very first
-        # call is deploy() must still be logged in before those two calls
-        # fire — otherwise they hit /api/capabilities unauthenticated and
-        # fail with a "verify your token" error despite valid credentials.
-        FakeBrokoli.use_cursor_shape = False
-        FakeBrokoli.pipelines_flat = []
-        client = Client(server, username="e2e", password="right")
-        result = client.deploy(self._pipeline(), validate=False)
-        assert FakeBrokoli.login_calls == 1
-        assert result["id"].startswith("created-")
 
     @staticmethod
     def _quiet_preflight(monkeypatch):

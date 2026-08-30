@@ -34,7 +34,6 @@ brokoli = "brokoli.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "jsonschema>=4.0", "ruff>=0.6", "mypy>=1.8", "build>=1.0"]
-watch = ["sodp-client>=0.2.2"]
 pandas = ["pandas>=1.5"]
 pyarrow = ["pyarrow>=12.0"]
 

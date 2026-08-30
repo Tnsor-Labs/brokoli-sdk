@@ -79,12 +79,14 @@ def fetch_server_capabilities(
             ) from exc
         if exc.code in LEGACY_STATUS_CODES:
             _legacy_or_raise(
-                f"Server {server} does not expose GET /api/capabilities (HTTP {exc.code}).",
+                f"Server {server} does not expose GET /api/capabilities "
+                f"(HTTP {exc.code}).",
                 allow_legacy_server,
             )
             return None
         raise CompatibilityError(
-            f"Server {server} capability check failed with HTTP {exc.code}; deployment was blocked."
+            f"Server {server} capability check failed with HTTP {exc.code}; "
+            "deployment was blocked."
         ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         reason = getattr(exc, "reason", str(exc))
@@ -118,7 +120,8 @@ def fetch_server_capabilities(
 
     features = payload.get("supported_execution_features")
     if features is not None and (
-        not isinstance(features, list) or any(not isinstance(f, str) or not f for f in features)
+        not isinstance(features, list)
+        or any(not isinstance(f, str) or not f for f in features)
     ):
         raise CompatibilityError(
             f"Server {server} returned an invalid /api/capabilities payload: "
@@ -188,7 +191,8 @@ def preflight_server_compatibility(
         if not isinstance(ir_version, str) or not ir_version:
             name = getattr(pipeline, "name", "<unnamed>")
             raise CompatibilityError(
-                f"Pipeline {name!r} does not declare a valid 'ir_version'; deployment was blocked."
+                f"Pipeline {name!r} does not declare a valid 'ir_version'; "
+                "deployment was blocked."
             )
         if ir_version not in supported:
             name = getattr(pipeline, "name", "<unnamed>")

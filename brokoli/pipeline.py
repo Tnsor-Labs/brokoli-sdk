@@ -79,10 +79,9 @@ def _capabilities_for(node_type: str) -> list[str]:
     """
     return list(NODE_TYPE_CAPABILITIES.get(node_type, DEFAULT_CAPABILITIES))
 
-
 # --- Code-gen templates ---
 
-TASK_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+TASK_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: call task function and capture output
@@ -108,10 +107,10 @@ TASK_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
         output_data = {{"columns": columns, "rows": rows}}
     else:
         output_data = {{"columns": columns, "rows": _task_result if isinstance(_task_result, list) else rows}}
-""")
+''')
 
 
-CONDITION_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+CONDITION_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: evaluate condition function
@@ -120,10 +119,10 @@ CONDITION_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
         output_data = {{"columns": columns, "rows": rows}}
     else:
         output_data = {{"columns": columns, "rows": []}}
-""")
+''')
 
 
-SOURCE_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+SOURCE_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: call source function and capture output
@@ -137,28 +136,28 @@ SOURCE_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
         output_data = {{"columns": list(_rows[0].keys()) if _rows else [], "rows": _rows}}
     else:
         output_data = {{"columns": [], "rows": _source_result if isinstance(_source_result, list) else []}}
-""")
+''')
 
 
-SINK_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+SINK_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: call sink function with input rows
     {func_name}(rows)
     # Pass-through: sinks forward data unchanged
     output_data = {{"columns": columns, "rows": rows}}
-""")
+''')
 
 
-FILTER_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+FILTER_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: apply filter predicate to each row
     output_data = {{"columns": columns, "rows": [r for r in rows if {func_name}(r)]}}
-""")
+''')
 
 
-MAP_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+MAP_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: apply map function to each row
@@ -167,10 +166,10 @@ MAP_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
         output_data = {{"columns": list(_mapped[0].keys()), "rows": _mapped}}
     else:
         output_data = {{"columns": columns, "rows": _mapped}}
-""")
+''')
 
 
-VALIDATE_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+VALIDATE_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: call validate function and check result
@@ -187,10 +186,10 @@ VALIDATE_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
         if _message:
             print(f"#VALIDATION_OK: {{_message}}", file=sys.stderr)
     output_data = {{"columns": columns, "rows": rows}}
-""")
+''')
 
 
-SENSOR_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
+SENSOR_WRAPPER_TEMPLATE: str = textwrap.dedent('''\
     {func_source}
 
     # Auto-generated: poll sensor until ready
@@ -205,13 +204,12 @@ SENSOR_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
             raise TimeoutError("Sensor '{func_name}' timed out after {{_timeout}}s")
         time.sleep(_poll_interval)
     output_data = {{"columns": columns, "rows": rows}}
-""")
+''')
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 def _make_id(name: str) -> str:
     """Return the deterministic canonical ID base for a display name."""
@@ -280,7 +278,7 @@ def _extract_func_source(
             f"{func.__qualname__!r} closes over {names} from an enclosing "
             "scope, which a deployed script can't carry. Move the value to "
             "module level or pass it through the data instead. (@task with "
-            'package="auto" captures JSON-serializable closure values '
+            "package=\"auto\" captures JSON-serializable closure values "
             "automatically; the other decorators do not.)"
         )
 
@@ -414,7 +412,7 @@ def _module_top_level_imports(module: Any) -> tuple[dict[str, str], set[str]]:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             start = node.lineno
             end = getattr(node, "end_lineno", node.lineno)
-            stmt = "\n".join(lines[start - 1 : end])
+            stmt = "\n".join(lines[start - 1:end])
             is_relative = isinstance(node, ast.ImportFrom) and node.level > 0
             for alias in node.names:
                 bound = alias.asname or alias.name.split(".")[0]
@@ -530,7 +528,9 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str], list[str]]:
     included_functions: dict[str, Callable] = {}
     errors: list[str] = []
 
-    errors.extend(_capture_closure(func, module, included_constants, included_functions))
+    errors.extend(
+        _capture_closure(func, module, included_constants, included_functions)
+    )
 
     relative_errors: list[str] = []
 
@@ -539,7 +539,11 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str], list[str]]:
         if with_decorators:
             names.extend(_decorator_refs(fn))
         for name in names:
-            if name in included_imports or name in included_constants or name in included_functions:
+            if (
+                name in included_imports
+                or name in included_constants
+                or name in included_functions
+            ):
                 continue
             if name in relative_imports:
                 relative_errors.append(name)
@@ -591,7 +595,7 @@ def _package_task_auto(func: Callable) -> tuple[str, list[str], list[str]]:
             "package (not JSON-serializable data, a same-module helper "
             "function, or an imported name). Either remove the reference, "
             "move the value somewhere serializable, or use "
-            '@task(package="module") to deploy the whole containing '
+            "@task(package=\"module\") to deploy the whole containing "
             "module instead."
         )
 
@@ -629,17 +633,17 @@ def _package_task_module(func: Callable) -> tuple[str, list[str], list[str]]:
     if func.__code__.co_freevars:
         names = ", ".join(sorted(func.__code__.co_freevars))
         raise PipelineError(
-            f'@task(package="module") can\'t deploy {func.__qualname__!r}: '
+            f"@task(package=\"module\") can't deploy {func.__qualname__!r}: "
             f"it closes over {names} from an enclosing scope, and module "
             "mode ships the file verbatim -- the deployed wrapper would "
             "call a function that only exists inside its factory. Use "
-            'package="auto" (which captures JSON-serializable closure '
+            "package=\"auto\" (which captures JSON-serializable closure "
             "values) or move the task to module level."
         )
     module = inspect.getmodule(func)
     if module is None:
         raise PipelineError(
-            f'@task(package="module"): can\'t locate the containing '
+            f"@task(package=\"module\"): can't locate the containing "
             f"module for {func.__qualname__!r} (it may have been defined "
             "dynamically, e.g. via exec()) -- module packaging needs a "
             "real source file."
@@ -648,7 +652,8 @@ def _package_task_module(func: Callable) -> tuple[str, list[str], list[str]]:
         source = inspect.getsource(module)
     except (OSError, TypeError) as exc:
         raise PipelineError(
-            f'@task(package="module"): couldn\'t read source for module {module.__name__!r}: {exc}'
+            f"@task(package=\"module\"): couldn't read source for module "
+            f"{module.__name__!r}: {exc}"
         ) from exc
     try:
         tree = ast.parse(source)
@@ -658,7 +663,7 @@ def _package_task_module(func: Callable) -> tuple[str, list[str], list[str]]:
         for node in tree.body:
             if isinstance(node, ast.ImportFrom) and node.level > 0:
                 raise PipelineError(
-                    f'@task(package="module") can\'t deploy '
+                    f"@task(package=\"module\") can't deploy "
                     f"{func.__qualname__!r}: module {module.__name__!r} "
                     "uses a relative import, which cannot resolve in a "
                     "deployed standalone script (no parent package "
@@ -695,7 +700,9 @@ def _external_import_roots(statements: Iterable[str]) -> list[str]:
     return sorted(r for r in roots if r not in stdlib and r != "brokoli")
 
 
-def _package_task_source(func: Callable, mode: str) -> tuple[str, Optional[dict[str, Any]]]:
+def _package_task_source(
+    func: Callable, mode: str
+) -> tuple[str, Optional[dict[str, Any]]]:
     """Extract *func*'s deployable source per *mode* (``"auto"``/``"module"``).
 
     Returns ``(source_text, package_meta)``. *package_meta* is ``None`` when
@@ -705,7 +712,9 @@ def _package_task_source(func: Callable, mode: str) -> tuple[str, Optional[dict[
     serializes exactly as it did before this feature existed.
     """
     if mode not in _PACKAGE_MODES:
-        raise PipelineError(f"@task(package={mode!r}): expected one of {_PACKAGE_MODES!r}")
+        raise PipelineError(
+            f"@task(package={mode!r}): expected one of {_PACKAGE_MODES!r}"
+        )
 
     if mode == "module":
         source_text, included, requires = _package_task_module(func)
@@ -734,7 +743,6 @@ def _package_task_source(func: Callable, mode: str) -> tuple[str, Optional[dict[
 # ---------------------------------------------------------------------------
 # Node references
 # ---------------------------------------------------------------------------
-
 
 class NodeRef:
     """An authoring-time reference to a node in the pipeline DAG.
@@ -802,13 +810,8 @@ class NodeRef:
             return item._ref
         # Auto-call wrappers that haven't been invoked yet
         _auto_call_types = (
-            _TaskWrapper,
-            _SourceWrapper,
-            _SinkWrapper,
-            _FilterWrapper,
-            _MapWrapper,
-            _ValidateWrapper,
-            _SensorWrapper,
+            _TaskWrapper, _SourceWrapper, _SinkWrapper,
+            _FilterWrapper, _MapWrapper, _ValidateWrapper, _SensorWrapper,
         )
         if isinstance(item, _auto_call_types):
             return item()
@@ -835,9 +838,15 @@ class ConditionRef(NodeRef):
             )
         expression = self.pipeline._nodes[self.node_id]["config"].get("expression", "")
         if not isinstance(expression, str) or not expression.strip():
-            raise PipelineError(f"Condition node {self.node_id!r} requires a non-empty expression.")
+            raise PipelineError(
+                f"Condition node {self.node_id!r} requires a non-empty expression."
+            )
 
-        ancestors = [from_id for from_id, to_id, _ in self.pipeline._edges if to_id == self.node_id]
+        ancestors = [
+            from_id
+            for from_id, to_id, _ in self.pipeline._edges
+            if to_id == self.node_id
+        ]
         visited: set[str] = set()
         while ancestors:
             node_id = ancestors.pop()
@@ -850,7 +859,9 @@ class ConditionRef(NodeRef):
                     f"node {self.node_id!r} is downstream of {node_id!r}."
                 )
             ancestors.extend(
-                from_id for from_id, to_id, _ in self.pipeline._edges if to_id == node_id
+                from_id
+                for from_id, to_id, _ in self.pipeline._edges
+                if to_id == node_id
             )
 
         items = other if isinstance(other, list) else [other]
@@ -908,7 +919,6 @@ class ConditionRef(NodeRef):
 # execution -- see brokoli-sdk#2 and the RFC §11-13 physical-planner
 # tracking in Tnsor-Labs/brokoli.
 
-
 class ScalarRef(NodeRef):
     """A :class:`NodeRef` whose node produces a single scalar value.
 
@@ -949,19 +959,27 @@ class DatasetRef(NodeRef):
       runnable code or invoked locally.
     """
 
-    def map(self, fn: Callable, name: str = "", node_key: Optional[str] = None) -> "DatasetRef":
+    def map(
+        self, fn: Callable, name: str = "", node_key: Optional[str] = None
+    ) -> "DatasetRef":
         """Compile a partition-level map transform over this dataset.
 
         See the class docstring for how this differs from ``@map``.
         """
-        return _add_partition_transform_node(self, "dataset_map", fn, name, node_key=node_key)
+        return _add_partition_transform_node(
+            self, "dataset_map", fn, name, node_key=node_key
+        )
 
-    def filter(self, fn: Callable, name: str = "", node_key: Optional[str] = None) -> "DatasetRef":
+    def filter(
+        self, fn: Callable, name: str = "", node_key: Optional[str] = None
+    ) -> "DatasetRef":
         """Compile a partition-level filter transform over this dataset.
 
         See the class docstring for how this differs from ``@filter``.
         """
-        return _add_partition_transform_node(self, "dataset_filter", fn, name, node_key=node_key)
+        return _add_partition_transform_node(
+            self, "dataset_filter", fn, name, node_key=node_key
+        )
 
 
 class CollectionRef(NodeRef):
@@ -989,7 +1007,9 @@ class CollectionRef(NodeRef):
         explicit ref.
         """
         collect_name = name or f"{_node_display_name(self)} (Collected)"
-        return _build_union_node(self.pipeline, collect_name, [self], mode=mode, node_key=node_key)
+        return _build_union_node(
+            self.pipeline, collect_name, [self], mode=mode, node_key=node_key
+        )
 
 
 def _node_display_name(ref: NodeRef) -> str:
@@ -1033,7 +1053,9 @@ def _build_union_node(
     capabilities, and config -- just a different edge count).
     """
     if mode != "union":
-        raise ValueError(f"union()/collect() only support mode='union' currently, got {mode!r}")
+        raise ValueError(
+            f"union()/collect() only support mode='union' currently, got {mode!r}"
+        )
     if not refs:
         raise ValueError("union()/collect() requires at least one upstream ref")
 
@@ -1097,7 +1119,6 @@ class _MultiRef:
 # Condition helpers
 # ---------------------------------------------------------------------------
 
-
 class _ConditionBranch:
     """Represents the true or false branch of a condition node."""
 
@@ -1140,7 +1161,6 @@ class _ConditionContext:
 # Decorator wrappers
 # ---------------------------------------------------------------------------
 
-
 def _validate_wrapper_inputs(pipeline: "Pipeline", inputs: tuple[NodeRef, ...]) -> None:
     """Validate wrapper inputs before allocating an ID."""
     pipeline._validate_refs(list(inputs))
@@ -1174,7 +1194,9 @@ class _TaskWrapper:
         # populate or consult this cache.
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         """Register this task as a node with edges from *inputs*."""
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
@@ -1311,10 +1333,7 @@ class _TaskWrapper:
             self._node_key if logical_node_key is None else logical_node_key,
         )
         self._pipeline._add_node(
-            node_id,
-            "code",
-            self._name,
-            config,
+            node_id, "code", self._name, config,
             capabilities=["compute", "dynamic-expansion", "collection-output"],
         )
         for ref in kwargs.values():
@@ -1339,7 +1358,9 @@ class _ConditionWrapper:
         self._node_key = node_key
         self.__wrapped__ = func
 
-    def __call__(self, input_ref: NodeRef, node_key: Optional[str] = None) -> _ConditionContext:
+    def __call__(
+        self, input_ref: NodeRef, node_key: Optional[str] = None
+    ) -> _ConditionContext:
         raise PipelineError(
             "@condition predicates are not supported by the runtime input "
             "contract. Use condition_node(..., expression=...) with "
@@ -1399,18 +1420,14 @@ class _SourceWrapper:
         if node_key is None and self._auto_ref is not None:
             return self._auto_ref
         func_source, package_meta = _package_task_source(self._func, "auto")
-        script = SOURCE_WRAPPER_TEMPLATE.format(
-            func_source=func_source, func_name=self._func.__name__
-        )
+        script = SOURCE_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
         if package_meta is not None:
             config["package"] = package_meta
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
-        self._pipeline._add_node(
-            node_id, "code", self._name, config, capabilities=["source", "dataset-output"]
-        )
+        self._pipeline._add_node(node_id, "code", self._name, config, capabilities=["source", "dataset-output"])
         ref = NodeRef(node_id, self._pipeline)
         if node_key is None:
             self._auto_ref = ref
@@ -1440,14 +1457,14 @@ class _SinkWrapper:
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
         func_source, package_meta = _package_task_source(self._func, "auto")
-        script = SINK_WRAPPER_TEMPLATE.format(
-            func_source=func_source, func_name=self._func.__name__
-        )
+        script = SINK_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script, **self._config}
         if package_meta is not None:
             config["package"] = package_meta
@@ -1487,14 +1504,14 @@ class _FilterWrapper:
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
         func_source, package_meta = _package_task_source(self._func, "auto")
-        script = FILTER_WRAPPER_TEMPLATE.format(
-            func_source=func_source, func_name=self._func.__name__
-        )
+        script = FILTER_WRAPPER_TEMPLATE.format(func_source=func_source, func_name=self._func.__name__)
         config: dict[str, Any] = {"language": "python", "script": script}
         if package_meta is not None:
             config["package"] = package_meta
@@ -1534,7 +1551,9 @@ class _MapWrapper:
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
@@ -1581,16 +1600,14 @@ class _ValidateWrapper:
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
         func_source, package_meta = _package_task_source(self._func, "auto")
-        action = (
-            'raise ValueError(f"Validation failed: {_message}")'
-            if self._on_failure == "block"
-            else ""
-        )
+        action = 'raise ValueError(f"Validation failed: {_message}")' if self._on_failure == "block" else ""
         script = VALIDATE_WRAPPER_TEMPLATE.format(
             func_source=func_source,
             func_name=self._func.__name__,
@@ -1639,7 +1656,9 @@ class _SensorWrapper:
         self.__name__ = func.__name__
         self._auto_ref: Optional[NodeRef] = None
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None
+    ) -> NodeRef:
         if not inputs and node_key is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
@@ -1717,14 +1736,16 @@ def _coerce_hook(name: str, value: Any) -> "dict[str, Any] | None":
         url = value.get("url", "")
         if hook_type not in _HOOK_TYPES or not url:
             raise PipelineError(
-                f"Pipeline({name}=...) dict needs a 'url' and a 'type' in {_HOOK_TYPES}."
+                f"Pipeline({name}=...) dict needs a 'url' and a 'type' in "
+                f"{_HOOK_TYPES}."
             )
         out = {"type": hook_type, "url": url, "enabled": value.get("enabled", True)}
         if value.get("extra"):
             out["extra"] = value["extra"]
         return out
     raise PipelineError(
-        f"Pipeline({name}=...) must be a URL string or a hook dict, got {type(value).__name__}."
+        f"Pipeline({name}=...) must be a URL string or a hook dict, "
+        f"got {type(value).__name__}."
     )
 
 
@@ -1737,8 +1758,8 @@ _HOOK_NAMES: tuple[str, ...] = ("on_start", "on_success", "on_failure")
 # (each thread and each task sees its own value), and so nested `with`
 # blocks restore the *enclosing* pipeline on exit instead of clobbering
 # the context to None. brokoli-sdk#15 M2.
-_current_pipeline_var: "contextvars.ContextVar[Optional[Pipeline]]" = contextvars.ContextVar(
-    "brokoli_current_pipeline", default=None
+_current_pipeline_var: "contextvars.ContextVar[Optional[Pipeline]]" = (
+    contextvars.ContextVar("brokoli_current_pipeline", default=None)
 )
 
 
@@ -1828,7 +1849,10 @@ class Pipeline:
         self._node_id_counters: dict[str, int] = {}
 
     def __repr__(self) -> str:
-        return f"Pipeline({self.name!r}, nodes={len(self._nodes)}, edges={len(self._edges)})"
+        return (
+            f"Pipeline({self.name!r}, nodes={len(self._nodes)}, "
+            f"edges={len(self._edges)})"
+        )
 
     # -- Context manager --------------------------------------------------
 
@@ -1850,11 +1874,15 @@ class Pipeline:
         """Require refs to be real nodes owned by this pipeline."""
         for ref in refs:
             if not isinstance(ref, NodeRef):
-                raise PipelineError(f"Expected a NodeRef input, got {type(ref).__name__}.")
+                raise PipelineError(
+                    f"Expected a NodeRef input, got {type(ref).__name__}."
+                )
             if ref.pipeline is not self:
                 raise PipelineError("Nodes from different pipelines cannot be connected.")
             if ref.node_id not in self._nodes:
-                raise PipelineError(f"Node {ref.node_id!r} does not exist in its owning pipeline.")
+                raise PipelineError(
+                    f"Node {ref.node_id!r} does not exist in its owning pipeline."
+                )
 
     @contextmanager
     def _transaction(self, items: list[Any]):
@@ -1863,7 +1891,10 @@ class Pipeline:
         edges_before = list(self._edges)
         order_before = list(self._node_order)
         branches_before = {
-            node_id: {branch: list(destinations) for branch, destinations in branch_map.items()}
+            node_id: {
+                branch: list(destinations)
+                for branch, destinations in branch_map.items()
+            }
             for node_id, branch_map in self._branches.items()
         }
         counters_before = dict(self._node_id_counters)
@@ -1889,11 +1920,15 @@ class Pipeline:
                 item._auto_ref = cached_ref
             raise
 
-    def _allocate_node_id(self, name: str, node_key: Optional[str] = None) -> str:
+    def _allocate_node_id(
+        self, name: str, node_key: Optional[str] = None
+    ) -> str:
         """Allocate a deterministic logical node ID owned by this pipeline."""
         if node_key is not None:
             if not isinstance(node_key, str) or not _NODE_KEY_PATTERN.fullmatch(node_key):
-                raise PipelineError("node_key must match ^[a-z][a-z0-9_-]{0,63}$ exactly")
+                raise PipelineError(
+                    "node_key must match ^[a-z][a-z0-9_-]{0,63}$ exactly"
+                )
             if node_key in self._nodes:
                 raise PipelineError(f"Duplicate node id {node_key!r}.")
             return node_key
@@ -1925,16 +1960,15 @@ class Pipeline:
         """
         if node_id in self._nodes:
             raise PipelineError(
-                f"Duplicate node id {node_id!r} (name={name!r}). Each node must have a unique id."
+                f"Duplicate node id {node_id!r} (name={name!r}). "
+                "Each node must have a unique id."
             )
         self._nodes[node_id] = {
             "id": node_id,
             "type": node_type,
             "name": name,
             "config": config,
-            "capabilities": list(capabilities)
-            if capabilities is not None
-            else _capabilities_for(node_type),
+            "capabilities": list(capabilities) if capabilities is not None else _capabilities_for(node_type),
         }
         self._node_order.append(node_id)
 
@@ -2036,7 +2070,9 @@ class Pipeline:
         try:
             import yaml
         except ImportError:
-            raise ImportError("PyYAML is required for YAML output. Install it: pip install pyyaml")
+            raise ImportError(
+                "PyYAML is required for YAML output. Install it: pip install pyyaml"
+            )
 
         data = self.to_json()
 
@@ -2065,7 +2101,9 @@ class Pipeline:
 
     def _validate_conditional_routing(self) -> None:
         conditional_sources = {
-            from_id for from_id, _, condition in self._edges if condition is not None
+            from_id
+            for from_id, _, condition in self._edges
+            if condition is not None
         }
         if not conditional_sources:
             return

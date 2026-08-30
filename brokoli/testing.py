@@ -1,19 +1,15 @@
 """Local test harness -- assert graph shape and task logic without a server.
 
-brokoli-sdk#15 M2, and brokoli-sdk#57 item 9 for :func:`live_pipeline`.
-The offline helpers *inspect* a compiled pipeline and *call* your task
-functions in isolation; they deliberately do **not** run the DAG or
-emulate the engine, since executing a pipeline is the Go runtime's job,
-never a Python approximation of it. What you get:
+brokoli-sdk#15 M2. These helpers *inspect* a compiled pipeline and *call*
+your task functions in isolation. They deliberately do **not** run the DAG
+or emulate the engine: executing a pipeline is the Go runtime's job, never
+a Python approximation of it. What you get:
 
 * :class:`Graph` / :func:`graph` -- assert nodes, edges, and config
   without deploying.
 * :func:`run_task` -- unit-test a task's Python logic on sample input.
 * :func:`ir_snapshot` -- a canonical IR string for golden-file tests.
 * :func:`assert_stable_ir` -- prove a builder recompiles to identical IR.
-* :func:`live_pipeline` -- deploy for real against a running server, fire
-  runs, and clean up -- for the integration tests the offline helpers
-  above deliberately don't cover.
 
 Typical use::
 
@@ -36,36 +32,16 @@ Typical use::
 
     def test_stable():
         assert_stable_ir(build)   # recompiling unchanged source must not churn IR
-
-    def test_runs_for_real():
-        client = Client.from_env()
-        with live_pipeline(client, build()) as lp:
-            run = lp.run()
-            detail = run.wait(timeout=60, raise_on_failure=True)
-            assert detail["status"] == "success"
-        # pipeline is deleted from the server here, pass or fail
 """
 
 from __future__ import annotations
 
-import uuid
-from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
-from brokoli.client import APIError, Client, Run
 from brokoli.ir import canonical_json, diff_ir, normalize_ir
 from brokoli.pipeline import Pipeline
 
-__all__ = [
-    "Graph",
-    "graph",
-    "run_task",
-    "ir_snapshot",
-    "assert_stable_ir",
-    "LivePipeline",
-    "live_pipeline",
-]
+__all__ = ["Graph", "graph", "run_task", "ir_snapshot", "assert_stable_ir"]
 
 
 class Graph:
@@ -83,14 +59,18 @@ class Graph:
         self._id_by_name: dict[str, str] = {}
         for node in ir["nodes"]:
             self._id_by_name.setdefault(node["name"], node["id"])
-        self._raw_edges: list[tuple[str, str]] = [(e["from"], e["to"]) for e in ir.get("edges", [])]
+        self._raw_edges: list[tuple[str, str]] = [
+            (e["from"], e["to"]) for e in ir.get("edges", [])
+        ]
 
     def _resolve(self, key: str) -> str:
         if key in self._nodes:
             return key
         if key in self._id_by_name:
             return self._id_by_name[key]
-        raise KeyError(f"no node named or id'd {key!r}; nodes are {sorted(self.node_names)}")
+        raise KeyError(
+            f"no node named or id'd {key!r}; nodes are {sorted(self.node_names)}"
+        )
 
     @property
     def node_names(self) -> list[str]:
@@ -155,7 +135,9 @@ class Graph:
     def assert_edge(self, src: str, dst: str) -> None:
         """Assert a direct edge ``src -> dst`` (by name) exists."""
         if not self.has_edge(src, dst):
-            raise AssertionError(f"expected edge {src!r} -> {dst!r}; edges are {self.edges}")
+            raise AssertionError(
+                f"expected edge {src!r} -> {dst!r}; edges are {self.edges}"
+            )
 
 
 def graph(pipeline: Pipeline) -> Graph:
@@ -175,7 +157,8 @@ def run_task(task: Any, *args: Any, **kwargs: Any) -> Any:
     fn = getattr(task, "__wrapped__", task)
     if not callable(fn):
         raise TypeError(
-            f"run_task expected a callable or a brokoli task wrapper, got {type(task).__name__}"
+            "run_task expected a callable or a brokoli task wrapper, got "
+            f"{type(task).__name__}"
         )
     return fn(*args, **kwargs)
 
@@ -205,79 +188,7 @@ def assert_stable_ir(builder: Callable[[], Pipeline]) -> None:
         raise AssertionError(
             "pipeline IR is not stable across rebuilds:\n"
             + diff_ir(
-                second,
-                first,
-                local_label="rebuild-2",
-                remote_label="rebuild-1",
+                second, first,
+                local_label="rebuild-2", remote_label="rebuild-1",
             )
         )
-
-
-@dataclass
-class LivePipeline:
-    """Handle to a pipeline deployed by :func:`live_pipeline` for the
-    duration of one test. Not meant to be constructed directly."""
-
-    client: Client
-    remote: dict[str, Any]
-
-    @property
-    def id(self) -> str:
-        """The server's internal id -- what run/delete/etc. actually key on."""
-        return self.remote["id"]
-
-    @property
-    def pipeline_id(self) -> str:
-        """The unique logical pipeline_id this test run deployed under."""
-        return str(self.remote.get("pipeline_id", ""))
-
-    def run(self, params: dict[str, str] | None = None) -> Run:
-        """Trigger a run of this deployed pipeline."""
-        return self.client.run(self.id, params)
-
-
-@contextmanager
-def live_pipeline(
-    client: Client,
-    pipeline: Pipeline,
-    *,
-    validate: bool = True,
-    cleanup: bool = True,
-) -> Iterator[LivePipeline]:
-    """Deploy *pipeline* under a unique id, yield a handle to fire and
-    observe real runs against it, and delete it from the server on exit.
-
-    Formalizes what every verification script under brokoli-sdk#57
-    reimplemented by hand: a unique pipeline_id per test run (so
-    concurrent or repeated runs never collide on the server's slug
-    uniqueness index, and a crashed prior run never leaves a stale
-    pipeline in the way), and teardown that runs whether the test passed,
-    failed, or raised.
-
-    Mutates *pipeline*'s ``name``/``pipeline_id`` in place before
-    deploying -- pass a freshly built ``Pipeline``, not one you still
-    need under its original identity elsewhere.
-
-    ``cleanup=False`` skips the delete on exit, useful when debugging a
-    failing live test and you want to inspect the deployed pipeline
-    afterward; you're responsible for removing it yourself at that point.
-
-    Raises whatever :meth:`Client.deploy` raises (validation/compatibility
-    errors) before ever yielding -- there is nothing to clean up in that
-    case, since nothing was deployed.
-    """
-    suffix = uuid.uuid4().hex[:8]
-    pipeline.pipeline_id = f"{pipeline.pipeline_id}-{suffix}"
-    pipeline.name = f"{pipeline.name} ({suffix})"
-
-    remote = client.deploy(pipeline, validate=validate)
-    handle = LivePipeline(client=client, remote=remote)
-    try:
-        yield handle
-    finally:
-        if cleanup:
-            try:
-                client.delete_pipeline(handle.id)
-            except APIError as exc:
-                if exc.status != 404:
-                    raise

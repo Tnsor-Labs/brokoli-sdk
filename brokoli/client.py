@@ -157,8 +157,7 @@ class Client:
         Explicit arguments win over the environment; the same variables
         the CLI honors, so one shell setup serves both.
         """
-        if server is None:
-            server = os.getenv("BROKOLI_SERVER", "")
+        server = server or os.getenv("BROKOLI_SERVER", "")
         token = os.getenv("BROKOLI_TOKEN", "")
         if token and "api_key" not in kwargs and "username" not in kwargs:
             kwargs["api_key"] = token
@@ -202,22 +201,6 @@ class Client:
         with self._lock:
             token = self._token
         return f"Bearer {token}" if token else ""
-
-    def _ensure_login(self) -> None:
-        """Trigger lazy login for a credentialed client's first use.
-
-        Callers that go through ``_request`` get this automatically.
-        Anything that reads ``_auth_header()`` directly instead of going
-        through ``_request`` — ``deploy``'s preflight/validation calls,
-        which hit ``/api/capabilities`` and ``/api/connections`` before
-        this client has made any other request — must call this first, or
-        a fresh credentialed client's very first ``deploy()`` sends those
-        two requests unauthenticated and gets a misleading "verify your
-        token" error despite having valid credentials that were simply
-        never given a chance to log in.
-        """
-        if self._username and not self._auth_header():
-            self.login()
 
     # -------------------------------------------------------------- requests
 
@@ -276,7 +259,9 @@ class Client:
         body: Any = None,
         query: dict[str, str] | None = None,
     ) -> Any:
-        self._ensure_login()
+        # Lazy first login for credentialed clients.
+        if self._username and not self._auth_header():
+            self.login()
         try:
             return self._raw_request(method, path, body=body, query=query)
         except APIError as exc:
@@ -362,10 +347,6 @@ class Client:
         from brokoli.compatibility import preflight_server_compatibility
         from brokoli.validation import validate_pipeline
 
-        # preflight/validate read _auth_header() directly rather than
-        # going through _request, so a credentialed client that hasn't
-        # made any other call yet needs its lazy login triggered here too.
-        self._ensure_login()
         preflight_server_compatibility(
             [pipeline],
             self.server,
@@ -399,21 +380,6 @@ class Client:
             raise APIError(f"malformed deploy response: {response!r}")
         return response
 
-    def delete_pipeline(self, pipeline: Any) -> None:
-        """Delete a pipeline from the server.
-
-        ``pipeline`` resolves the same way as :meth:`run` and :meth:`deploy`
-        -- an internal id, logical pipeline_id, name, or an authored
-        ``Pipeline`` object. Raises ``APIError`` (status 404) if nothing
-        matches; the server's own delete is not idempotent, so a caller
-        that wants "gone either way" should catch that itself.
-        """
-        identifier = pipeline
-        if not isinstance(pipeline, str):
-            identifier = getattr(pipeline, "pipeline_id", "") or getattr(pipeline, "name", "")
-        remote = self.pipeline(str(identifier))
-        self._request("DELETE", f"/api/pipelines/{remote['id']}")
-
     # ------------------------------------------------------------------ runs
 
     def run(self, pipeline: Any, params: dict[str, str] | None = None) -> "Run":
@@ -433,33 +399,6 @@ class Client:
     def run_handle(self, run_id: str) -> "Run":
         """Wrap an existing run id (from a log, another process, the UI)."""
         return Run(self, run_id)
-
-    # ----------------------------------------------------------- observability
-
-    def dlq(
-        self,
-        pipeline: Any,
-        *,
-        include_resolved: bool = False,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """Dead-letter queue entries for ``pipeline``.
-
-        ``pipeline`` resolves the same way ``run()`` does. Verification
-        scripts use this to assert a clean DLQ after a cancel/retry
-        matrix — nothing silently fell through to it.
-        """
-        identifier = pipeline
-        if not isinstance(pipeline, str):
-            identifier = getattr(pipeline, "pipeline_id", "") or getattr(pipeline, "name", "")
-        remote = self.pipeline(str(identifier))
-        query = {"limit": str(limit)}
-        if include_resolved:
-            query["include_resolved"] = "true"
-        payload = self._request("GET", f"/api/pipelines/{remote['id']}/dlq", query=query)
-        if not isinstance(payload, list):
-            raise APIError(f"malformed DLQ response for {remote['id']}: {payload!r}")
-        return [e for e in payload if isinstance(e, dict)]
 
 
 class Run:
@@ -496,6 +435,7 @@ class Run:
         poll_interval: float = 2.0,
         *,
         raise_on_failure: bool = False,
+        visibility_grace: float = 2.0,
     ) -> dict[str, Any]:
         """Poll until the run is terminal; return its final API object.
 
@@ -505,9 +445,20 @@ class Run:
         object attached either way there is something to assert on.
         """
         deadline = time.monotonic() + timeout
+        visibility_deadline = time.monotonic() + visibility_grace
+        interval = min(0.05, poll_interval)
         last_status = ""
         while True:
-            detail = self.detail()
+            try:
+                detail = self.detail()
+            except APIError as exc:
+                # Triggering is asynchronous: a successful POST can precede
+                # persistence of the run row by a short interval.
+                if exc.status == 404 and time.monotonic() < visibility_deadline:
+                    time.sleep(interval)
+                    interval = min(interval * 1.6, poll_interval)
+                    continue
+                raise
             last_status = str(detail.get("status", ""))
             if last_status in TERMINAL_RUN_STATUSES:
                 if raise_on_failure and last_status != "success":
@@ -515,7 +466,8 @@ class Run:
                 return detail
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"run {self.id} still {last_status!r} after {timeout:.0f}s")
-            time.sleep(poll_interval)
+            time.sleep(interval)
+            interval = min(interval * 1.6, poll_interval)
 
     def cancel(self) -> dict[str, Any]:
         """Request cancellation. Terminal statuses arrive asynchronously —
@@ -535,16 +487,3 @@ class Run:
         if entries is None:
             raise APIError(f"malformed logs response for {self.id}: {payload!r}")
         return [e for e in entries if isinstance(e, dict)]
-
-    def node_preview(self, node_id: str) -> dict[str, Any]:
-        """Sample rows and columns from ``node_id``'s output in this run.
-
-        For spot-checking results (row values, whether a column landed)
-        without exporting through a sink first. Raises ``APIError`` (404)
-        if the node has no preview available — it may not have run yet,
-        or preview capture may be disabled for it.
-        """
-        payload = self.client._request("GET", f"/api/runs/{self.id}/nodes/{node_id}/preview")
-        if not isinstance(payload, dict) or "columns" not in payload or "rows" not in payload:
-            raise APIError(f"malformed preview response for {self.id}/{node_id}: {payload!r}")
-        return payload
