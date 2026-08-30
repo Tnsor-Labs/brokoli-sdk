@@ -78,6 +78,22 @@ class TestRequiredFeatures:
             union("Merge", a, b) >> sink_file("S", path="/o.csv", format="csv")
         assert required_execution_features(up.to_json()) == {"union"}
 
+    def test_emit_scripts_require_code_streaming_emit(self):
+        # ADR-029: emit()/begin_emit() names don't exist on servers whose
+        # wrapper predates the streaming idiom -- refuse at deploy, not
+        # at run time.
+        from brokoli import code
+
+        with Pipeline("e", pipeline_id="e") as p:
+            src = source_file("In", path="/a.csv", format="csv")
+            code("Stream", input=src, script="begin_emit(['a'])\nfor r in rows:\n    emit(r)\n")
+        assert "code-streaming-emit" in required_execution_features(p.to_json())
+
+        with Pipeline("plain", pipeline_id="plain") as p2:
+            src = source_file("In", path="/a.csv", format="csv")
+            code("Old", input=src, script="output_data = {'columns': columns, 'rows': rows}")
+        assert "code-streaming-emit" not in required_execution_features(p2.to_json())
+
     def test_catch_up_requires_data_intervals(self):
         p = _catchup_pipeline()
         assert required_execution_features(p.to_json()) == {"data_intervals"}

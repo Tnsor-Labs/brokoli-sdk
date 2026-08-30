@@ -161,6 +161,18 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
         # runtime semantics.
         if "execution" in config:
             required.add("pagination-checkpoints")
+        # emit()/begin_emit() are wrapper contract features (ADR-029,
+        # core "code-streaming-emit"): on a server whose wrapper
+        # predates them the names simply don't exist and the script
+        # fails at run time -- or worse, a bare emit falls back to
+        # passthrough. A string scan is the same pragmatic test the
+        # pagination gate uses: false positives (the word in a comment)
+        # only ever refuse a deploy against a server too old to run
+        # modern scripts anyway.
+        if node_type == "code":
+            script = config.get("script") or ""
+            if "emit(" in script or "begin_emit(" in script:
+                required.add("code-streaming-emit")
     # catch_up compiles to the pipeline-level catchup field (ADR-028):
     # per-interval catch-up only exists on servers that advertise
     # data_intervals, and older strict decoders reject the field outright.
