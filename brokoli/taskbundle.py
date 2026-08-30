@@ -70,9 +70,9 @@ def digest_bytes(data: bytes) -> str:
 def _json_manifest(manifest: dict[str, Any]) -> bytes:
     # Sorted keys, no whitespace: deterministic, and the ordering the ADR
     # requires for content addressing to mean anything.
-    return json.dumps(
-        manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    return json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def _empty_dir(names: Iterable[str]) -> list[str]:
@@ -412,9 +412,7 @@ def package_task_project(
     files[entry] = entry_source
 
     source_digest = digest_bytes(
-        b"\x00".join(
-            f"{p}\x00{files[p]}".encode("utf-8") for p in sorted(files)
-        )
+        b"\x00".join(f"{p}\x00{files[p]}".encode("utf-8") for p in sorted(files))
     )
     language_runtime = f">={sys.version_info.major}.{sys.version_info.minor}"
     manifest = {

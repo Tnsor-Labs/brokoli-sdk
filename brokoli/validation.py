@@ -170,19 +170,22 @@ def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) 
         digest = task_bundle.get("digest")
         if not isinstance(digest, str) or not _is_bundle_digest(digest):
             result.add_error(
-                name, "task_bundle.digest",
+                name,
+                "task_bundle.digest",
                 "task_bundle.digest must be a content address of the form "
                 "'sha256:' + 64 hex characters",
             )
         fmt = task_bundle.get("format")
         if fmt != _TASK_BUNDLE_FORMAT:
             result.add_error(
-                name, "task_bundle.format",
+                name,
+                "task_bundle.format",
                 f"task_bundle.format must be {_TASK_BUNDLE_FORMAT!r}",
             )
     elif task_bundle is not None and not isinstance(task_bundle, dict):
         result.add_error(
-            name, "task_bundle",
+            name,
+            "task_bundle",
             "'task_bundle' must be an object with 'digest' and 'format'",
         )
 

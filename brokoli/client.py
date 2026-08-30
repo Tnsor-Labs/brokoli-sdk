@@ -340,7 +340,9 @@ class Client:
             error_body = exc.read().decode(errors="replace")
             raise APIError(
                 f"POST {url} -> HTTP {exc.code}: {error_body}",
-                status=exc.code, url=url, body=error_body,
+                status=exc.code,
+                url=url,
+                body=error_body,
             ) from exc
         except urllib.error.URLError as exc:
             raise APIError(f"POST {url} failed: {exc.reason}", url=url) from exc
