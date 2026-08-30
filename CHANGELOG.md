@@ -7,6 +7,17 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Added
+
+- **Deploy preflight gates `emit()` scripts on server support** (#84).
+  Core servers now advertise the `code-streaming-emit` execution
+  feature (ADR-029); a code-node script using `emit(`/`begin_emit(`
+  requires it, so deploying to a server whose wrapper predates the
+  streaming idiom is refused at deploy time with a feature-naming error
+  instead of failing (or silently passthrough-ing) at run time. Servers
+  that don't advertise features at all are, as ever, waved through
+  unless `allow_legacy_server=False`.
+
 ## 0.8.0 - 2026-08-29
 
 One fix, minor bump: it is a behavior break called out below, and under
