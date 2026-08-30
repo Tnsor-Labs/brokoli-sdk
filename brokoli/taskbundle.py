@@ -383,13 +383,19 @@ def package_task_project(
     import inspect
 
     module = inspect.getmodule(func)
-    if module is None or getattr(module, "__file__", None) is None:
+    if module is None:
         raise BundleError(
-            f"cannot package {getattr(func, '__qualname__', '<task>')!r}: its "
-            "containing module has no source file (defined dynamically, e.g. via "
-            "exec()/interactive) -- task bundles need a real project on disk"
+            f"cannot package {getattr(func, '__qualname__', '<task>')!r}: no containing module"
         )
-    module_file = os.path.realpath(module.__file__)
+    raw_file = getattr(module, "__file__", None)
+    if raw_file is None:
+        raise BundleError(
+            f"cannot package {getattr(func, '__qualname__', '<task>')!r}: "
+            "its containing module has no source file (defined dynamically, "
+            "e.g. via exec()/interactive) -- task bundles need a real project "
+            "on disk"
+        )
+    module_file = os.path.realpath(raw_file)
 
     root = project_root
     if root is None:
