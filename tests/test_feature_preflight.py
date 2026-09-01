@@ -3,9 +3,16 @@
 The server's ``supported_execution_features`` lists only what it can
 actually RUN. The preflight contract here:
 
-  - field absent (pre-v0.10.11 server): feature gating is skipped -- those
-    servers execute several gated features without advertising them, so
-    absence must never read as "no features";
+  - field absent: for a purely DECLARATIVE feature (conditional-routing,
+    data_intervals, ...) gating is skipped -- a genuinely pre-v0.10.11
+    server executes several gated features without advertising them, so
+    absence must never read as "no features" for those;
+  - field absent, but a RUNTIME-EXISTENCE feature is required
+    (code-streaming-emit, task-bundles -- ADR-030 §3): gating still
+    applies. A server old enough to omit the field cannot have the
+    wrapper/mount machinery those names refer to, so absence there means
+    "unsupported", not "predates the mechanism" -- see
+    RUNTIME_EXISTENCE_FEATURES in brokoli.compatibility;
   - field present: every feature the compiled payload depends on must be
     advertised, or deployment fails naming the missing features, and
     --allow-legacy-server cannot override it;
@@ -51,6 +58,40 @@ def _catchup_pipeline():
         src = source_file("Read", path="/tmp/in.csv", format="csv")
         src >> sink_file("Save", path="/tmp/out.csv", format="csv")
     return p
+
+
+class _StaticPayloadPipeline:
+    """A pipeline stub whose to_json() is a hand-built payload -- for
+    exercising the feature gate against a config shape (task_bundle) that
+    does not need a real project on disk to test the gating logic itself."""
+
+    def __init__(self, name, node_config):
+        self.name = name
+        self._node_config = node_config
+
+    def to_json(self):
+        return {
+            "name": self.name,
+            "ir_version": "2.0",
+            "nodes": [{"id": "n1", "type": "code", "name": "N", "config": self._node_config}],
+            "edges": [],
+        }
+
+
+def _task_bundle_pipeline():
+    return _StaticPayloadPipeline(
+        "bundle",
+        {
+            "language": "python",
+            "task_bundle": {"digest": "sha256:" + "0" * 64, "format": "task-bundle/1"},
+        },
+    )
+
+
+def _emit_pipeline():
+    return _StaticPayloadPipeline(
+        "emit", {"language": "python", "script": "begin_emit(['a'])\nfor r in rows:\n    emit(r)\n"}
+    )
 
 
 def _paginated_pipeline():
@@ -117,6 +158,31 @@ class TestFeatureGating:
     def test_absent_field_skips_feature_gating(self, monkeypatch):
         _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
         preflight_server_compatibility([_conditional_pipeline()], "http://s")
+
+    def test_absent_field_still_refuses_task_bundles(self, monkeypatch):
+        # A server old enough to omit supported_execution_features entirely
+        # cannot have ADR-031's mount machinery either -- absence must not
+        # be read as "predates the field but would still run this".
+        _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
+        with pytest.raises(CompatibilityError, match="task-bundles"):
+            preflight_server_compatibility([_task_bundle_pipeline()], "http://s")
+
+    def test_absent_field_still_refuses_streaming_emit(self, monkeypatch):
+        _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
+        with pytest.raises(CompatibilityError, match="code-streaming-emit"):
+            preflight_server_compatibility([_emit_pipeline()], "http://s")
+
+    def test_absent_field_cannot_be_overridden_for_runtime_features(self, monkeypatch):
+        # allow_legacy_server only relaxes the case where the capabilities
+        # ENDPOINT itself is unreachable (404/405 or a connection failure).
+        # Here the endpoint answers normally -- it simply omits the field --
+        # so the flag has nothing to relax, and the runtime-existence gate
+        # applies regardless of how the flag is set.
+        _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
+        with pytest.raises(CompatibilityError, match="task-bundles"):
+            preflight_server_compatibility(
+                [_task_bundle_pipeline()], "http://s", allow_legacy_server=True
+            )
 
     def test_advertised_features_pass(self, monkeypatch):
         _serve_capabilities(

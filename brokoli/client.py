@@ -312,6 +312,48 @@ class Client:
             self.login()
             return self._raw_request(method, path, body=body, query=query)
 
+    def upload_task_bundle(self, bundle: Any) -> None:
+        """Upload one packaged task bundle content-addressed (ADR-031).
+
+        POST /api/task-bundles/{digest}, the raw archive bytes as the
+        body. The server re-hashes the body and refuses a digest mismatch
+        (400), a bundle over the size cap (413), and a stored-digest
+        collision with different bytes (409). 201 (created) and 200
+        (unchanged) are both success: the same digest re-uploaded is the
+        same content by definition.
+        """
+        self._ensure_login()
+        url = f"{self.server}/api/task-bundles/{bundle.digest}"
+        headers = {"Content-Type": "application/gzip"}
+        header = self._auth_header()
+        if header:
+            headers["Authorization"] = header
+        request = urllib.request.Request(url, data=bundle.archive, method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                if response.status not in (200, 201):
+                    raise APIError(
+                        f"POST {url} -> HTTP {response.status}", status=response.status, url=url
+                    )
+                response.read()
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode(errors="replace")
+            raise APIError(
+                f"POST {url} -> HTTP {exc.code}: {error_body}",
+                status=exc.code,
+                url=url,
+                body=error_body,
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise APIError(f"POST {url} failed: {exc.reason}", url=url) from exc
+
+    def upload_task_bundles(self, pipeline: Any) -> None:
+        """Upload every task bundle attached to *pipeline*, deduplicated by
+        digest, idempotently. Called by ``deploy`` before the pipeline is
+        written so the IR's digest references always resolve on the server."""
+        for bundle in getattr(pipeline, "task_bundles", ()) or ():
+            self.upload_task_bundle(bundle)
+
     # ------------------------------------------------------------- pipelines
 
     def pipelines(self) -> list[dict[str, Any]]:
@@ -396,6 +438,11 @@ class Client:
             )
             if not result.valid:
                 raise ValidationError([str(e) for e in result.errors])
+
+        # Task bundles ride sideband on the Pipeline (the IR only carries
+        # digests): upload them before the pipeline so every reference
+        # resolves server-side. Content-addressed uploads are idempotent.
+        self.upload_task_bundles(pipeline)
 
         payload = pipeline.to_json()
         remote = self.pipelines()

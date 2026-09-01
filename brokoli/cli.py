@@ -11,7 +11,7 @@ import sys
 import urllib.request
 import urllib.error
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -207,6 +207,40 @@ def load_pipeline_from_file(filepath: str) -> list[Any]:
     return pipelines
 
 
+def _upload_task_bundles(
+    server: str,
+    auth_header: str,
+    pipelines: Sequence[Any],
+) -> None:
+    """Upload every attached task bundle content-addressed (ADR-031),
+    once per digest across all pipelines, before the pipelines themselves
+    are written. 201/200 are both success; the server refuses mismatched
+    bytes (409), oversize archives (413), and malformed digests (400).
+    """
+    seen: set[str] = set()
+    for pipeline in pipelines:
+        for bundle in getattr(pipeline, "task_bundles", ()) or ():
+            if bundle.digest in seen:
+                continue
+            seen.add(bundle.digest)
+            url = f"{server}/api/task-bundles/{bundle.digest}"
+            req = urllib.request.Request(
+                url,
+                data=bundle.archive,
+                method="POST",
+                headers=_make_headers(auth_header, "application/gzip"),
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                    if resp.status not in (200, 201):
+                        raise DeployError(
+                            pipeline.name, resp.status, f"upload failed (HTTP {resp.status})"
+                        )
+            except urllib.error.HTTPError as e:
+                raise DeployError(pipeline.name, e.code, e.read().decode()) from e
+            print(f"  Uploaded task bundle {bundle.digest[:16]}… ({len(bundle.archive)} bytes)")
+
+
 def _upsert_pipeline(
     server: str,
     auth_header: str,
@@ -297,6 +331,10 @@ def deploy(args: argparse.Namespace) -> None:
 
     remote_pipelines = _list_remote_pipelines(server, auth_header, operation="deploy")
     matches = _match_remote_pipelines(pipelines, remote_pipelines)
+
+    # Task bundles ride sideband on the pipelines (the IR only carries
+    # digest references): upload them first so the references resolve.
+    _upload_task_bundles(server, auth_header, pipelines)
 
     for (pipeline, payload), match in zip(payloads, matches):
         _upsert_pipeline(server, auth_header, pipeline, payload, match)
