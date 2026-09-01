@@ -124,6 +124,53 @@ class TestPackageTaskProject:
         assert "brokoli" in str(exc.value)
         assert "third-party" in str(exc.value)
 
+    def test_module_level_stdlib_import_excluded_on_all_supported_pythons(self, tmp_path):
+        # sys.stdlib_module_names only exists from 3.10 -- the packager
+        # must not depend on it being present (the project's floor is
+        # 3.9). A module-level `import json` must never be mistaken for
+        # a project file to ship.
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mod.py").write_text(
+            "import json\n"
+            "def enrich(rows):\n"
+            "    return [{**r, 'v': json.dumps(r)} for r in rows]\n"
+        )
+        bundle = _build("mod", project_root=str(tmp_path))
+        assert "mod.py" in bundle.files
+        assert not any(f.startswith("json") for f in bundle.files)
+
+    def test_function_body_stdlib_import_excluded(self, tmp_path):
+        # ast.parse(...).body only sees top-level statements; an import
+        # written inside a function is invisible there and needs
+        # ast.walk to be found at all. Prove the stdlib fallback path
+        # also applies to it, not just to module-level imports.
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mod.py").write_text(
+            "def enrich(rows):\n"
+            "    import os\n"
+            "    return [{**r, 'host': os.environ.get('HOST', '')} for r in rows]\n"
+        )
+        bundle = _build("mod", project_root=str(tmp_path))
+        assert "mod.py" in bundle.files
+        assert not any(f.startswith("os") for f in bundle.files)
+
+    def test_function_body_third_party_import_still_refused(self, tmp_path):
+        # The same walk that finds a nested stdlib import must not
+        # weaken the existing top-level safety net: a third-party
+        # import hidden inside a function body is exactly the case
+        # that would otherwise silently escape "refuse by name at
+        # packaging time" and fail at run time instead.
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mod.py").write_text(
+            "def enrich(rows):\n"
+            "    import brokoli\n"
+            "    return rows\n"
+        )
+        with pytest.raises(BundleError) as exc:
+            _build("mod", project_root=str(tmp_path))
+        assert "brokoli" in str(exc.value)
+        assert "third-party" in str(exc.value)
+
     def test_entry_imports_task_module_under_wrapper_contract(self, tmp_path):
         (tmp_path / ".git").mkdir(exist_ok=True)
         (tmp_path / "mypkg").mkdir()

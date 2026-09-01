@@ -28,10 +28,12 @@ from __future__ import annotations
 import ast
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import os
 import sys
+import sysconfig
 import tarfile
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
@@ -53,7 +55,51 @@ _DIGEST_PREFIX = "sha256:"
 # Unexecutable top-level roots: stdlib modules are not bundled (the worker
 # has them); everything else that cannot be resolved inside the project is
 # refused by name instead of deployed to fail remotely.
-_STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
+#
+# sys.stdlib_module_names was added in Python 3.10. On 3.9 -- this SDK's
+# own documented minimum (requires-python = ">=3.9") -- it does not
+# exist, and getattr(..., ()) silently degraded to an empty set: EVERY
+# stdlib import (json, os, re, ...) was then refused as third-party,
+# making package="bundle" unusable for any real task on 3.9. Verified
+# live: `import json` at module scope on a 3.9 interpreter raised
+# BundleError before this fix. _is_stdlib() below is version-portable:
+# the frozenset is the fast path where it exists, and the fallback
+# resolves the module and checks whether its file lives under the
+# interpreter's own stdlib directory rather than site-packages, which
+# works identically on every supported version.
+_STDLIB_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+
+def _stdlib_dirs() -> "frozenset[str]":
+    dirs = set()
+    for key in ("stdlib", "platstdlib"):
+        path = sysconfig.get_path(key)
+        if path:
+            dirs.add(os.path.realpath(path))
+    return frozenset(dirs)
+
+
+_STDLIB_DIRS = _stdlib_dirs()
+
+
+def _is_stdlib(name: str) -> bool:
+    """Whether top-level module *name* is part of the interpreter's own
+    standard library -- imported at run time but never bundled."""
+    if name in _STDLIB_NAMES or name in sys.builtin_module_names:
+        return True
+    if _STDLIB_NAMES:
+        return False  # Python 3.10+: the frozenset is authoritative.
+    # Python 3.9 fallback: resolve the module and check where it actually
+    # lives. A module that fails to resolve at all is not stdlib -- it
+    # falls through to the ordinary "not part of this project" refusal.
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+    if spec is None or not spec.origin:
+        return False
+    origin = os.path.realpath(spec.origin)
+    return any(origin == d or origin.startswith(d + os.sep) for d in _STDLIB_DIRS)
 
 
 class BundleError(Exception):
@@ -218,7 +264,7 @@ def _refuse(name: str, reason: str) -> None:
 
 
 def _classify_unresolved(top_root: str) -> None:
-    if top_root in _STDLIB:
+    if _is_stdlib(top_root):
         return  # stdlib: present in the worker, never bundled
     _refuse(
         top_root,
@@ -287,7 +333,7 @@ def _package_module(files: dict[str, str], root: str, rel_module: str) -> None:
     resolved = _resolve_under_root(rel_module, root)
     if resolved is None:
         top = rel_module.split(".")[0]
-        if top in _STDLIB:
+        if _is_stdlib(top):
             return
         _refuse(
             top,
@@ -334,7 +380,19 @@ def _add_module_file(files: dict[str, str], root: str, abs_path: str) -> None:
         tree = ast.parse(content, filename=rel)
     except SyntaxError as exc:
         _refuse(rel, f"source does not parse: {exc}")
-    for stmt in tree.body:
+    # ast.walk, not tree.body: an import statement inside a function body
+    # (a lazy import, one guarded by try/except for an optional
+    # dependency, one inside an if-block) is invisible to a top-level-only
+    # scan. That is worse than merely missing a file -- it means the
+    # "refuse third-party imports at packaging time" promise silently did
+    # not apply to them: a third-party import used only inside a function
+    # deployed successfully and would have failed at RUN time, exactly
+    # the failure mode this v1 scope exists to convert into a packaging
+    # error. Relative-import resolution only depends on the importing
+    # module's own path (`rel`), never on the statement's lexical nesting,
+    # so walking the whole tree is a strict correctness fix with no
+    # change to how any resolved import is handled.
+    for stmt in ast.walk(tree):
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
             _package_import(files, root, rel, stmt)
 

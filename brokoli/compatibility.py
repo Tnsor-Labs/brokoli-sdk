@@ -14,6 +14,18 @@ from brokoli.exceptions import CompatibilityError
 REQUEST_TIMEOUT = 10
 LEGACY_STATUS_CODES = {404, 405}
 
+# ADR-030 §3: a feature that proves a server-side RUNTIME capability
+# exists (a wrapper idiom, a worker language, a mount mechanism) must
+# fail closed even when the server's response simply omits
+# supported_execution_features -- absence cannot prove the runtime
+# exists, and treating it as "predates the whole mechanism" stopped
+# being a safe assumption the moment new runtime-existence features
+# started shipping after capabilities advertising already existed. A
+# purely declarative feature (data_intervals, conditional-routing, ...)
+# keeps the legacy waiver below: an old server that genuinely predates
+# GET /api/capabilities' execution-feature field can still run those.
+RUNTIME_EXISTENCE_FEATURES = frozenset({"code-streaming-emit", "task-bundles"})
+
 
 class LegacyServerWarning(UserWarning):
     """The target server could not prove pipeline IR compatibility."""
@@ -223,17 +235,27 @@ def preflight_server_compatibility(
                 "override a version mismatch reported by the server."
             )
 
+        required = required_execution_features(payload)
         if capabilities.supported_execution_features is not None:
-            missing = required_execution_features(payload) - set(
-                capabilities.supported_execution_features
+            missing = required - set(capabilities.supported_execution_features)
+        else:
+            # This server responded to GET /api/capabilities (it is not
+            # the LEGACY_STATUS_CODES case above) but its payload simply
+            # has no 'supported_execution_features' key -- a real,
+            # narrow window of servers that shipped capabilities before
+            # that field existed. Declarative features get the legacy
+            # waiver they always had; runtime-existence features do not,
+            # because a server old enough to omit the field cannot have
+            # the wrapper/worker/mount machinery a 0.11.x+ feature name
+            # refers to.
+            missing = required & RUNTIME_EXISTENCE_FEATURES
+        if missing:
+            name = getattr(pipeline, "name", "<unnamed>")
+            missing_text = ", ".join(sorted(missing))
+            raise CompatibilityError(
+                f"Pipeline {name!r} requires execution feature(s) the "
+                f"server does not support: {missing_text}. The server "
+                "advertises what it can actually run; deploying anyway "
+                "would persist a pipeline that fails at run time. "
+                "--allow-legacy-server cannot override this."
             )
-            if missing:
-                name = getattr(pipeline, "name", "<unnamed>")
-                missing_text = ", ".join(sorted(missing))
-                raise CompatibilityError(
-                    f"Pipeline {name!r} requires execution feature(s) the "
-                    f"server does not support: {missing_text}. The server "
-                    "advertises what it can actually run; deploying anyway "
-                    "would persist a pipeline that fails at run time. "
-                    "--allow-legacy-server cannot override this."
-                )
