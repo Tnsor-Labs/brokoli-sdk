@@ -48,9 +48,16 @@ Typical use::
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import time
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Iterator
 
 from brokoli.client import APIError, Client, Run
@@ -58,6 +65,7 @@ from brokoli.ir import canonical_json, diff_ir, normalize_ir
 from brokoli.pipeline import Pipeline
 
 __all__ = [
+    "BackendProcess",
     "Graph",
     "graph",
     "run_task",
@@ -66,6 +74,71 @@ __all__ = [
     "LivePipeline",
     "live_pipeline",
 ]
+
+
+class BackendProcess:
+    """Start a real Brokoli backend for contract/integration tests."""
+
+    def __init__(
+        self,
+        command: Sequence[str] | str,
+        *,
+        server: str = "http://127.0.0.1:8080",
+        startup_timeout: float = 30.0,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.command = shlex.split(command) if isinstance(command, str) else list(command)
+        if not self.command:
+            raise ValueError("backend command must not be empty")
+        self.server = server.rstrip("/")
+        self.startup_timeout = startup_timeout
+        self.env = dict(env or {})
+        self.process: subprocess.Popen[bytes] | None = None
+
+    def __enter__(self) -> "BackendProcess":
+        environment = os.environ.copy()
+        environment.update(self.env)
+        environment["BROKOLI_TEST_SERVER_URL"] = self.server
+        self.process = subprocess.Popen(
+            self.command,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        deadline = time.monotonic() + self.startup_timeout
+        health_url = f"{self.server}/health"
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                output = (
+                    self.process.stdout.read().decode(errors="replace")
+                    if self.process.stdout
+                    else ""
+                )
+                raise RuntimeError(
+                    f"backend exited with status {self.process.returncode}: {output[-2000:]}"
+                )
+            try:
+                with urllib.request.urlopen(health_url, timeout=1):
+                    return self
+            except (urllib.error.URLError, TimeoutError):
+                time.sleep(0.1)
+        self.close()
+        raise TimeoutError(f"backend did not become healthy within {self.startup_timeout:.1f}s")
+
+    def close(self) -> None:
+        if self.process is None:
+            return
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        self.process = None
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 class Graph:
