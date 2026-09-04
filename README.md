@@ -478,7 +478,21 @@ Python SDK          Brokoli Server          Visual Editor
 
 - Python 3.9+
 - Brokoli server running (for deploy)
-- No external dependencies (stdlib only)
+- Runtime dependency: `pyyaml` (only required for YAML output)
+
+### Backend contract tests
+
+The opt-in integration suite runs against the real backend process rather than
+a Python test double:
+
+```bash
+BROKOLI_BACKEND_COMMAND='./broked serve --db /tmp/brokoli.db' \
+BROKOLI_BACKEND_URL=http://127.0.0.1:8080 \
+pytest -q tests/integration
+```
+
+The command must start a backend exposing `GET /health`. CI builds and runs a
+pinned core backend for this suite on every change.
 
 ## License
 
