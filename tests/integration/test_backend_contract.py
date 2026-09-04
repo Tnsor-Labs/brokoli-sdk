@@ -24,6 +24,7 @@ from brokoli import (
 )
 from brokoli.testing import BackendProcess
 from brokoli.exceptions import CompatibilityError
+from brokoli.result import TaskResult
 
 
 COMMAND = os.getenv("BROKOLI_BACKEND_COMMAND")
@@ -86,6 +87,32 @@ def test_decorated_task_is_packaged_and_executes(client, tmp_path):
     _run(client, pipeline)
     assert "source" in output_path.read_text()
     assert "decorated" in output_path.read_text()
+
+
+def test_decorated_task_result_round_trips_through_backend_wrapper(client, tmp_path):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "task-result.csv"
+    input_path.write_text("id,status\n1,active\n")
+
+    with Pipeline(
+        "SDK decorator wrapper contract", pipeline_id=f"sdk-contract-wrapper-{os.getpid()}"
+    ) as pipeline:
+        source = source_file("Read", path=str(input_path), format="csv")
+
+        @task("Structured result")
+        def structured(rows):
+            return TaskResult(
+                data=[dict(row, checked="yes") for row in rows],
+                warnings=["one row checked"],
+            )
+
+        structured(source) >> sink_file("Write", path=str(output_path), format="csv")
+
+    detail = _run(client, pipeline)
+    output = output_path.read_text()
+    assert "checked" in output
+    logs = client.run_handle(detail["id"]).logs()
+    assert any("#WARNING: one row checked" in str(entry) for entry in logs)
 
 
 def test_artifact_reference_transfers_to_downstream_code(client, tmp_path):
