@@ -85,7 +85,7 @@ jobs:
 
   # Gate: exercise the SDK against the pinned real backend, not a Python
   # approximation. The backend is built from the core repository at the
-  # commit below so compatibility changes are intentional and reviewable.
+  # release below so compatibility changes are intentional and reviewable.
   backend-contract:
     name: Backend contract
     runs-on: ubuntu-latest
