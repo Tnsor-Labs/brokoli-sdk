@@ -145,6 +145,26 @@ class TestRequiredFeatures:
             src >> sink_file("Save", path="/tmp/out.csv", format="csv")
         assert required_execution_features(p.to_json()) == set()
 
+    def test_task_interface_and_pipeline_parameters_require_task_interface_v1(self):
+        # ADR-032 rollout step 3: a node's inferred "interface" and a
+        # pipeline's inferred "parameters" both need the same gate a
+        # server old enough to predate IR 2.2 cannot advertise.
+        from typing import TypedDict
+
+        from brokoli import task
+
+        class Row(TypedDict):
+            id: int
+
+        with Pipeline("typed", pipeline_id="typed") as p:
+
+            @task
+            def score(rows: list[Row], threshold: float = 0.5) -> list[Row]:
+                return rows
+
+            score()
+        assert required_execution_features(p.to_json()) == {"task-interface-v1"}
+
 
 class TestFeatureGating:
     FULL = [

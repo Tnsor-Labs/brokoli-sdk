@@ -160,6 +160,12 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
             continue
         config = node.get("config") or {}
         node_type = node.get("type")
+        # ADR-032 rollout step 3 (#439): a node's "interface" field is
+        # additive IR, but a server that doesn't advertise
+        # task-interface-v1 may not even accept IR 2.2 -- refuse at
+        # deploy preflight rather than let a strict decoder 400 it.
+        if node.get("interface") is not None:
+            required.add("task-interface-v1")
         if "expansion" in config:
             required.add("dynamic-expansion")
         if node_type == "union":
@@ -196,6 +202,10 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
     # data_intervals, and older strict decoders reject the field outright.
     if payload.get("catchup"):
         required.add("data_intervals")
+    # ADR-032 rollout step 3: a pipeline-level "parameters" declaration
+    # needs the same gate as a node's own "interface" field above.
+    if payload.get("parameters"):
+        required.add("task-interface-v1")
     return required
 
 

@@ -30,6 +30,11 @@ LAYOUT_Y_MIN: int = 50
 # addition of the ``capabilities`` field on nodes.
 IR_VERSION: str = "2.0"
 CONDITIONAL_ROUTING_IR_VERSION: str = "2.1"
+# First IR version whose nodes/pipeline may carry an ADR-032 'interface'/
+# 'parameters' object (rollout step 3). Only emitted when a @task's
+# inferred or explicit interface, or an inferred pipeline parameter,
+# actually exists -- an untyped pipeline still compiles to 2.0/2.1.
+TASK_INTERFACE_IR_VERSION: str = "2.2"
 
 # --- Capability model ---
 #
@@ -1185,6 +1190,7 @@ class _TaskWrapper:
         config: dict[str, Any],
         package: str = "auto",
         node_key: Optional[str] = None,
+        interface: Optional[dict[str, Any]] = None,
     ) -> None:
         self._func = func
         self._name = name
@@ -1192,6 +1198,11 @@ class _TaskWrapper:
         self._config = config
         self._package = package
         self._node_key = node_key
+        # ADR-032 rollout step 3: an explicit interface= skips inference
+        # entirely for the row schema. Parameter inference from keyword
+        # defaults/annotations still runs independently either way -- see
+        # _resolve_interface_and_parameters.
+        self._interface_override = interface
         self.__wrapped__ = func
         self.__name__ = func.__name__
         # Cache of the node created by the zero-arg "auto-call" path (used
@@ -1201,6 +1212,23 @@ class _TaskWrapper:
         # different upstream data) always create a fresh node and never
         # populate or consult this cache.
         self._auto_ref: Optional[NodeRef] = None
+
+    def _resolve_interface_and_parameters(self) -> Optional[dict[str, Any]]:
+        """Resolve this task's node interface (explicit override or
+        inferred) and merge any inferred keyword parameters into the
+        owning pipeline. Runs once per registered node -- called from
+        __call__ right before _add_node, so two nodes from the same
+        wrapper (re-called with different inputs) each get their own
+        inference pass, matching how config/script are already rebuilt
+        per call."""
+        from brokoli.interface_inference import infer_task_interface
+
+        inferred = infer_task_interface(self._func)
+        for param_name, declaration in inferred.parameters.items():
+            self._pipeline._merge_parameter(param_name, declaration)
+        if self._interface_override is not None:
+            return self._interface_override
+        return inferred.node_interface
 
     def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
         """Register this task as a node with edges from *inputs*."""
@@ -1245,7 +1273,8 @@ class _TaskWrapper:
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
-        self._pipeline._add_node(node_id, "code", self._name, config)
+        interface = self._resolve_interface_and_parameters()
+        self._pipeline._add_node(node_id, "code", self._name, config, interface=interface)
 
         for inp in inputs:
             if isinstance(inp, NodeRef):
@@ -1887,6 +1916,30 @@ class Pipeline:
         # digest. They ride sideband -- to_json() stays pure IR -- and are
         # uploaded ahead of the pipeline by deployers (Client.deploy / brokoli deploy).
         self._bundles: dict[str, "Any"] = {}
+        # ADR-032 rollout step 3 (#439): pipeline-level parameter
+        # declarations inferred from @task keyword defaults/annotations
+        # (interface_inference.infer_task_interface), keyed by name.
+        # Distinct from any node's own interface -- this is what
+        # to_json() serializes as the pipeline's top-level "parameters".
+        self._parameters: dict[str, dict[str, Any]] = {}
+
+    def _merge_parameter(self, name: str, declaration: dict[str, Any]) -> None:
+        """Register an inferred pipeline parameter, or confirm an
+        identical re-declaration from a second task reusing the same
+        keyword name. A same-name/different-type collision across two
+        tasks is almost certainly two unrelated concepts sharing a
+        keyword name by accident, not a legitimate shared parameter --
+        raise rather than silently keep whichever declaration came
+        first."""
+        existing = self._parameters.get(name)
+        if existing is not None and existing != declaration:
+            raise PipelineError(
+                f"Parameter {name!r} was inferred with two different declarations "
+                f"({existing!r} vs {declaration!r}) from different @task functions. "
+                "Give the parameters different names, or pass an explicit "
+                "interface=... to make one of them opt out of inference."
+            )
+        self._parameters[name] = declaration
 
     def _attach_bundle(self, bundle: "Any") -> None:
         """Register a packaged task bundle with this pipeline (deduplicated
@@ -1940,6 +1993,7 @@ class Pipeline:
             for node_id, branch_map in self._branches.items()
         }
         counters_before = dict(self._node_id_counters)
+        parameters_before = dict(self._parameters)
         cached_refs: list[tuple[Any, Optional[NodeRef]]] = []
 
         def capture(item: Any) -> None:
@@ -1958,6 +2012,7 @@ class Pipeline:
             self._node_order = order_before
             self._branches = branches_before
             self._node_id_counters = counters_before
+            self._parameters = parameters_before
             for item, cached_ref in cached_refs:
                 item._auto_ref = cached_ref
             raise
@@ -1987,6 +2042,7 @@ class Pipeline:
         name: str,
         config: dict[str, Any],
         capabilities: list[str] | None = None,
+        interface: dict[str, Any] | None = None,
     ) -> None:
         """Register a node.
 
@@ -1995,6 +2051,11 @@ class Pipeline:
         always use the literal type ``"code"``) pass an explicit override
         so the capability reflects the decorator (``@source``, ``@sink``,
         ...) rather than the generic code-node default.
+
+        *interface* is the ADR-032 rollout step 3 node interface (inferred
+        or explicit) -- omitted from the node record entirely when
+        ``None``, the same "absent means unproven, not an empty claim"
+        treatment ``infer_task_interface`` itself uses.
         """
         if node_id in self._nodes:
             raise PipelineError(
@@ -2008,6 +2069,7 @@ class Pipeline:
             "capabilities": list(capabilities)
             if capabilities is not None
             else _capabilities_for(node_type),
+            "interface": interface,
         }
         self._node_order.append(node_id)
 
@@ -2044,9 +2106,14 @@ class Pipeline:
                 "capabilities": list(node.get("capabilities") or _capabilities_for(node["type"])),
                 "position": positions.get(nid, {"x": 0, "y": 0}),
             }
+            if node.get("interface") is not None:
+                node_data["interface"] = copy.deepcopy(node["interface"])
             self._annotate_schema_hint(node, node_data)
             nodes.append(node_data)
 
+        uses_task_interfaces = bool(self._parameters) or any(
+            n.get("interface") is not None for n in self._nodes.values()
+        )
         result: dict[str, Any] = {
             "pipeline_id": self.pipeline_id,
             "name": self.name,
@@ -2054,7 +2121,9 @@ class Pipeline:
             "schedule": self.schedule,
             "enabled": True,
             "ir_version": (
-                CONDITIONAL_ROUTING_IR_VERSION
+                TASK_INTERFACE_IR_VERSION
+                if uses_task_interfaces
+                else CONDITIONAL_ROUTING_IR_VERSION
                 if any(condition is not None for _, _, condition in self._edges)
                 else IR_VERSION
             ),
@@ -2091,6 +2160,13 @@ class Pipeline:
 
         if self.webhook:
             result["webhook_token"] = ""  # server will generate
+
+        # ADR-032 rollout step 3: pipeline-level parameters inferred from
+        # @task keyword defaults/annotations. Omitted unless non-empty,
+        # matching every other optional field here -- a pipeline that
+        # never used typed task parameters compiles identically to before.
+        if self._parameters:
+            result["parameters"] = copy.deepcopy(self._parameters)
 
         return result
 

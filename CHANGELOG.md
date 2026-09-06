@@ -9,6 +9,19 @@ those are called out explicitly.
 
 ### Added
 
+- **`@task` infers a portable node interface and typed pipeline
+  parameters from type hints** (Brokoli core ADR-032 rollout step 3,
+  core issue #439). A `TypedDict`/dataclass-annotated `rows` parameter
+  and return value compile to a BPTD record interface (IR 2.2); any
+  other annotated keyword parameter becomes a typed pipeline parameter
+  -- optional with its default if it has one, required otherwise.
+  Unannotated or unrecognized types stay honestly unknown rather than a
+  guessed shape, and a plain, fully untyped `@task` compiles exactly as
+  before (no interface/parameters keys, IR stays at 2.0/2.1). Pass
+  `interface={...}` to `@task` to declare the row schema explicitly
+  instead of relying on inference. Requires a server advertising the
+  `task-interface-v1` execution feature; deploy preflight refuses older
+  servers the same way every other execution-feature gate already does.
 - **Deploy preflight gates `emit()` scripts on server support** (#84).
   Core servers now advertise the `code-streaming-emit` execution
   feature (ADR-029); a code-node script using `emit(`/`begin_emit(`
