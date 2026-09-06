@@ -46,6 +46,7 @@ def task(
     on_failure: Optional[str | Callable] = None,
     package: str = "auto",
     node_key: Optional[str] = None,
+    interface: Optional[dict] = None,
 ) -> _TaskWrapper | Callable:
     """Wrap a Python function as a code node for general data processing.
 
@@ -112,6 +113,18 @@ def task(
     fails packaging with a clear, named error rather than deploying
     something that would fail at run time. Requires a server that
     advertises the ``task-bundles`` execution feature.
+
+    ADR-032 (rollout step 3): by default, ``@task`` infers a portable
+    node interface from ``rows``' and the return value's type hints
+    (``TypedDict``/dataclass rows compile to a BPTD record; anything
+    unannotated or unrecognized stays honestly unknown, never a guessed
+    shape), and promotes every other annotated keyword parameter to a
+    typed **pipeline** parameter -- a keyword with a default becomes
+    optional with that default; one without becomes required. Pass
+    ``interface={...}`` to skip inference and declare the node's
+    interface directly (parameter inference still runs independently).
+    Requires a server that advertises the ``task-interface-v1`` execution
+    feature; older servers simply never see the field.
     """
     config: dict = {}
     if retries is not UNSET and retries is not None:
@@ -125,7 +138,15 @@ def task(
     def decorator(func: Callable) -> _TaskWrapper:
         task_name = _resolve_name(name_or_func, name, func)
         pipeline = _require_pipeline("@task")
-        return _TaskWrapper(func, task_name, pipeline, config, package=package, node_key=node_key)
+        return _TaskWrapper(
+            func,
+            task_name,
+            pipeline,
+            config,
+            package=package,
+            node_key=node_key,
+            interface=interface,
+        )
 
     if callable(name_or_func):
         func = name_or_func
