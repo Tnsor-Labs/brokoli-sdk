@@ -65,16 +65,20 @@ class _StaticPayloadPipeline:
     exercising the feature gate against a config shape (task_bundle) that
     does not need a real project on disk to test the gating logic itself."""
 
-    def __init__(self, name, node_config):
+    def __init__(self, name, node_config, node_type="code", edges=None):
         self.name = name
         self._node_config = node_config
+        self._node_type = node_type
+        self._edges = edges or []
 
     def to_json(self):
         return {
             "name": self.name,
             "ir_version": "2.0",
-            "nodes": [{"id": "n1", "type": "code", "name": "N", "config": self._node_config}],
-            "edges": [],
+            "nodes": [
+                {"id": "n1", "type": self._node_type, "name": "N", "config": self._node_config}
+            ],
+            "edges": self._edges,
         }
 
 
@@ -85,6 +89,26 @@ def _task_bundle_pipeline():
             "language": "python",
             "task_bundle": {"digest": "sha256:" + "0" * 64, "format": "task-bundle/1"},
         },
+    )
+
+
+def _task_node_pipeline():
+    # ADR-033's "task" node type -- a separate execution path from a code
+    # node that merely carries a task_bundle. Hand-built because no SDK
+    # authoring API emits one yet (ADR-033 phase 5); the gate has to hold
+    # for round-tripped or hand-assembled IR in the meantime.
+    return _StaticPayloadPipeline(
+        "tasknode",
+        {"task_bundle": {"digest": "sha256:" + "0" * 64, "format": "task-bundle/2"}},
+        node_type="task",
+    )
+
+
+def _ported_edge_pipeline():
+    return _StaticPayloadPipeline(
+        "ported",
+        {"language": "python", "script": "pass"},
+        edges=[{"from": "n1", "to": "n1", "from_port": "rejected"}],
     )
 
 
@@ -164,6 +188,35 @@ class TestRequiredFeatures:
 
             score()
         assert required_execution_features(p.to_json()) == {"task-interface-v1"}
+
+    def test_task_node_requires_runtime_and_bundle_v2(self):
+        # ADR-033: a "task" node is a distinct execution path, not a code
+        # node variant. task_bundle is mandatory on one, so both features
+        # always travel together.
+        features = required_execution_features(_task_node_pipeline().to_json())
+        assert features == {"task-runtime-v1", "task-bundle-v2"}
+
+    def test_task_node_does_not_claim_the_v1_bundle_feature(self):
+        # task-bundles (ADR-031, task-bundle/1) and task-bundle-v2 name
+        # different mount mechanisms. A server advertising only the older
+        # one cannot run a task node, so the v1 name must not appear here
+        # -- otherwise the gate would pass against exactly that server.
+        assert "task-bundles" not in required_execution_features(_task_node_pipeline().to_json())
+
+    def test_ported_edge_requires_task_ports_v1(self):
+        # No released server advertises task-ports-v1, so this refuses
+        # every port-carrying deploy on purpose: a server that ignores
+        # from_port/to_port routes the edge as if unported, producing a
+        # wrong pipeline rather than a refused one.
+        features = required_execution_features(_ported_edge_pipeline().to_json())
+        assert "task-ports-v1" in features
+
+    def test_unported_edges_stay_ungated(self):
+        # The gate keys on a port actually being named -- an ordinary
+        # pipeline must not suddenly require a feature no server has.
+        assert "task-ports-v1" not in required_execution_features(
+            _conditional_pipeline().to_json()
+        )
 
 
 class TestFeatureGating:

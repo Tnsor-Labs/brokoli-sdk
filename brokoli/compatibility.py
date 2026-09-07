@@ -24,7 +24,22 @@ LEGACY_STATUS_CODES = {404, 405}
 # purely declarative feature (data_intervals, conditional-routing, ...)
 # keeps the legacy waiver below: an old server that genuinely predates
 # GET /api/capabilities' execution-feature field can still run those.
-RUNTIME_EXISTENCE_FEATURES = frozenset({"code-streaming-emit", "task-bundles"})
+# task-runtime-v1/task-bundle-v2/task-ports-v1 (ADR-032, ADR-033) are
+# runtime-existence features by the same reasoning: a server old enough
+# to omit the field entirely cannot have a task-runtime harness, a v2
+# bundle resolver, or port-aware routing. Without them here, a task
+# pipeline would PASS preflight against such a server and then be
+# hard-refused by its validator -- the exact "deployed, then fails" case
+# this gate exists to prevent.
+RUNTIME_EXISTENCE_FEATURES = frozenset(
+    {
+        "code-streaming-emit",
+        "task-bundles",
+        "task-runtime-v1",
+        "task-bundle-v2",
+        "task-ports-v1",
+    }
+)
 
 
 class LegacyServerWarning(UserWarning):
@@ -152,9 +167,18 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
     """The execution features a compiled pipeline payload depends on."""
     required: set[str] = set()
     for edge in payload.get("edges") or []:
-        if isinstance(edge, dict) and "condition" in edge:
+        if not isinstance(edge, dict):
+            continue
+        if "condition" in edge:
             required.add("conditional-routing")
-            break
+        # ADR-032 named ports. No released server advertises
+        # task-ports-v1 yet, so this gate refuses every port-carrying
+        # deploy -- deliberately. The alternative is worse: a server that
+        # doesn't understand from_port/to_port drops them and silently
+        # routes the edge as if it were unported, which is a wrong
+        # pipeline rather than a refused one.
+        if edge.get("from_port") or edge.get("to_port"):
+            required.add("task-ports-v1")
     for node in payload.get("nodes") or []:
         if not isinstance(node, dict):
             continue
@@ -168,6 +192,19 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
             required.add("task-interface-v1")
         if "expansion" in config:
             required.add("dynamic-expansion")
+        if node_type == "task":
+            # ADR-033: a "task" node is a whole separate execution path
+            # (task-bundle/v2 payload dispatched over the
+            # brokoli.task-runtime/v1 protocol), not a variant of "code".
+            # A server that predates it doesn't merely lack a feature --
+            # its validator hard-refuses any pipeline containing one, so
+            # without this gate the deploy fails server-side with a
+            # structural error that says nothing about which server
+            # capability was missing. task_bundle is mandatory on a task
+            # node (optional on a code node), so both features always
+            # travel together.
+            required.add("task-runtime-v1")
+            required.add("task-bundle-v2")
         if node_type == "union":
             required.add("union")
         elif node_type == "dataset_map":
