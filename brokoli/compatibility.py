@@ -36,6 +36,7 @@ RUNTIME_EXISTENCE_FEATURES = frozenset(
         "code-streaming-emit",
         "code-typescript",
         "task-bundles",
+        "task-parameters-v1",
         "task-runtime-v1",
         "task-bundle-v2",
         "task-ports-v1",
@@ -253,6 +254,15 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
     # needs the same gate as a node's own "interface" field above.
     if payload.get("parameters"):
         required.add("task-interface-v1")
+        # ...and a second, stricter gate. task-interface-v1 only says the
+        # server understands the declaration; it does not say the server
+        # DELIVERS the resolved values to the task. Until #487 that was
+        # exactly the gap: servers validated a submitted parameter,
+        # recorded it on the run, and then ran the task with its default,
+        # producing a green run and a wrong answer. Refusing here is the
+        # only way an SDK can keep a declaring pipeline off a server that
+        # would silently ignore what the user submitted.
+        required.add("task-parameters-v1")
     return required
 
 
