@@ -22,7 +22,50 @@ class TestCodeGeneration:
         code_node = next(n for n in nodes if n["type"] == "code")
         script = code_node["config"]["script"]
         assert "def process" in script
-        assert "_task_result = process(rows)" in script
+        # The call passes rows positionally and forwards any ADR-032
+        # declared parameters the run supplied as keywords (#487).
+        assert "_task_result = process(" in script
+        assert "rows, **{_k: _bk_supplied[_k] for _k in _bk_names if _k in _bk_supplied}" in script
+
+    def test_task_wrapper_forwards_declared_parameters(self):
+        # A task with an annotated keyword must receive the resolved
+        # value, not silently run with its default (#487). The generated
+        # script is executed here against a stand-in `parameters` binding,
+        # because asserting on the text alone is what let the original
+        # bug ship.
+        with Pipeline("test") as p:
+            src = source_db("S", query="SELECT 1", conn_id="pg")
+
+            @task("Score")
+            def score(rows, threshold: float = 0.5):
+                return [{"t": threshold}]
+
+            score(src)
+
+        script = next(
+            n for n in p.to_json()["nodes"] if n["type"] == "code"
+        )["config"]["script"]
+        ns = {"rows": [], "columns": [], "parameters": {"threshold": 0.9}}
+        exec(script, ns)
+        assert ns["output_data"]["rows"] == [{"t": 0.9}]
+
+    def test_task_wrapper_falls_back_to_defaults_without_the_binding(self):
+        # A server that never sets `parameters` must not break the script.
+        with Pipeline("test") as p:
+            src = source_db("S", query="SELECT 1", conn_id="pg")
+
+            @task("Score")
+            def score(rows, threshold: float = 0.5):
+                return [{"t": threshold}]
+
+            score(src)
+
+        script = next(
+            n for n in p.to_json()["nodes"] if n["type"] == "code"
+        )["config"]["script"]
+        ns = {"rows": [], "columns": []}
+        exec(script, ns)
+        assert ns["output_data"]["rows"] == [{"t": 0.5}]
 
     def test_condition_rejects_unsupported_wrapper(self):
         with Pipeline("test") as p:

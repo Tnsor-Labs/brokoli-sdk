@@ -90,8 +90,25 @@ def _capabilities_for(node_type: str) -> list[str]:
 TASK_WRAPPER_TEMPLATE: str = textwrap.dedent("""\
     {func_source}
 
-    # Auto-generated: call task function and capture output
-    _task_result = {func_name}(rows)
+    # Auto-generated: call task function and capture output.
+    #
+    # ADR-032 section 7 declared parameters arrive in the `parameters`
+    # binding the server provides (distinct from `params`, which is the
+    # legacy untyped string map). Only names this function actually
+    # accepts are passed, and only when the run supplied them, so
+    # anything unsupplied still falls back to the function's own default.
+    #
+    # globals().get rather than a bare reference: a pipeline deployed
+    # against a server that predates the binding must not NameError. The
+    # SDK refuses that deploy up front (the task-parameters-v1 gate in
+    # brokoli.compatibility), so this is the belt to that braces -- it
+    # covers a server downgraded after deployment.
+    import inspect as _bk_inspect
+    _bk_supplied = globals().get("parameters") or {{}}
+    _bk_names = list(_bk_inspect.signature({func_name}).parameters)[1:]
+    _task_result = {func_name}(
+        rows, **{{_k: _bk_supplied[_k] for _k in _bk_names if _k in _bk_supplied}}
+    )
     if hasattr(_task_result, 'to_rows'):
         # TaskResult object
         _rows = _task_result.to_rows()

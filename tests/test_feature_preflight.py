@@ -187,7 +187,12 @@ class TestRequiredFeatures:
                 return rows
 
             score()
-        assert required_execution_features(p.to_json()) == {"task-interface-v1"}
+        # task-parameters-v1 too: understanding the declaration and
+        # DELIVERING the resolved value are different capabilities (#487).
+        assert required_execution_features(p.to_json()) == {
+            "task-interface-v1",
+            "task-parameters-v1",
+        }
 
     def test_task_node_requires_runtime_and_bundle_v2(self):
         # ADR-033: a "task" node is a distinct execution path, not a code
