@@ -34,6 +34,7 @@ LEGACY_STATUS_CODES = {404, 405}
 RUNTIME_EXISTENCE_FEATURES = frozenset(
     {
         "code-streaming-emit",
+        "code-typescript",
         "task-bundles",
         "task-runtime-v1",
         "task-bundle-v2",
@@ -225,6 +226,15 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
         # only ever refuse a deploy against a server too old to run
         # modern scripts anyway.
         if node_type == "code":
+            # code(language="typescript") is accepted by this SDK, but the
+            # server advertises code-typescript only when a Node runtime
+            # actually resolved at startup (it is not in the static
+            # feature list). Without this gate a Python-authored
+            # TypeScript node deploys against a server with no Node and
+            # fails at run time. The TypeScript SDK has always gated
+            # this; the Python SDK can author the same node and did not.
+            if config.get("language") == "typescript":
+                required.add("code-typescript")
             script = config.get("script") or ""
             if "emit(" in script or "begin_emit(" in script:
                 required.add("code-streaming-emit")

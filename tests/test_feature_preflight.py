@@ -203,6 +203,26 @@ class TestRequiredFeatures:
         # -- otherwise the gate would pass against exactly that server.
         assert "task-bundles" not in required_execution_features(_task_node_pipeline().to_json())
 
+    def test_typescript_code_node_requires_code_typescript(self):
+        # The server advertises code-typescript only when a Node runtime
+        # resolved at startup -- it is not in the static feature list --
+        # so a Python-authored TypeScript node deployed to a server
+        # without Node fails at run time unless this gate refuses it.
+        p = _StaticPayloadPipeline("ts", {"language": "typescript", "script": "export {}"})
+        assert "code-typescript" in required_execution_features(p.to_json())
+
+    def test_python_code_node_does_not_require_code_typescript(self):
+        p = _StaticPayloadPipeline("py", {"language": "python", "script": "pass"})
+        assert "code-typescript" not in required_execution_features(p.to_json())
+
+    def test_absent_field_still_refuses_typescript_code(self, monkeypatch):
+        # A server old enough to omit the feature list cannot have the
+        # TypeScript wrapper, so absence must read as unsupported.
+        _serve_capabilities(monkeypatch, {"supported_ir_versions": ["2.0", "2.1"]})
+        p = _StaticPayloadPipeline("ts", {"language": "typescript", "script": "export {}"})
+        with pytest.raises(CompatibilityError, match="code-typescript"):
+            preflight_server_compatibility([p], "http://s")
+
     def test_ported_edge_requires_task_ports_v1(self):
         # No released server advertises task-ports-v1, so this refuses
         # every port-carrying deploy on purpose: a server that ignores
