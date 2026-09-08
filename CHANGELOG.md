@@ -7,6 +7,58 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.9.0 - 2026-09-08
+
+Requires a Brokoli server on **v0.11.6 or newer** for pipelines that
+declare typed parameters; see the first entry for why that is enforced
+rather than advisory.
+
+### Fixed
+
+- **A task now actually receives the parameters it declares** (core
+  issue #487). The generated wrapper called your function as
+  `func(rows)` -- no keyword arguments -- so a declared parameter could
+  never arrive. Combined with the server side, which validated a
+  submitted value, recorded it on the run row, and then ran the task
+  with its default, this meant:
+
+  ```python
+  @task("Score")
+  def score(rows, threshold: float = 0.5):   # declares a parameter
+      ...
+  ```
+
+  triggering a run with `threshold=0.9` computed with `0.5`. **A green
+  run and a wrong answer**, with nothing reporting a problem.
+
+  The call now forwards the names your function actually accepts, and
+  only when the run supplied them, so anything unsupplied still falls
+  back to your own default rather than arriving as `None`. **If you have
+  a pipeline with declared parameters, re-check any result that depended
+  on one.**
+
+### Added
+
+- **Deploy preflight gates three more server capabilities**, each
+  closing a "deploys clean, then misbehaves" path:
+  - `task-parameters-v1` for a pipeline declaring typed parameters.
+    `task-interface-v1` only ever meant the server *accepts* the
+    declaration; it never meant the values would be honoured. Those are
+    different questions and now have different names, so a declaring
+    pipeline is refused on a server that would silently ignore what you
+    submit.
+  - `code-typescript` for `code(language="typescript")` nodes. The
+    server advertises this only when a Node runtime resolved at startup,
+    so a TypeScript node used to deploy cleanly against a server with no
+    Node and fail at run time.
+  - `task-runtime-v1`/`task-bundle-v2` for ADR-033 `task` nodes, and
+    `task-ports-v1` for edges naming `from_port`/`to_port`. No authoring
+    API emits either shape yet, so these cover hand-assembled or
+    round-tripped IR today and go live unchanged when authoring lands.
+    Note `task-bundles` (ADR-031, `task-bundle/1`) is a different mount
+    mechanism and is deliberately not accepted in its place.
+
+
 ### Added
 
 - **`@task` infers a portable node interface and typed pipeline
