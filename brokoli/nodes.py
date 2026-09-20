@@ -546,9 +546,7 @@ def join(
     if not isinstance(right_alias, str):
         raise PipelineError(f"join({name!r}): right_alias must be a string.")
     if collision_policy == "alias" and not right_alias.strip():
-        raise PipelineError(
-            f"join({name!r}): collision_policy='alias' requires right_alias."
-        )
+        raise PipelineError(f"join({name!r}): collision_policy='alias' requires right_alias.")
     if collision_policy != "alias" and right_alias:
         raise PipelineError(
             f"join({name!r}): right_alias is only valid with collision_policy='alias'."

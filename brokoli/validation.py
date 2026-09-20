@@ -313,7 +313,9 @@ def _validate_join(name: str, config: dict[str, Any], result: ValidationResult) 
     _validate_enum(name, config, "collision_policy", VALID_JOIN_COLLISION_POLICIES, result)
     right_alias = config.get("right_alias", "")
     if policy == "alias" and not isinstance(right_alias, str):
-        result.add_error(name, "right_alias", "Join alias collision policy requires a string right_alias")
+        result.add_error(
+            name, "right_alias", "Join alias collision policy requires a string right_alias"
+        )
     elif policy == "alias" and not right_alias.strip():
         result.add_error(name, "right_alias", "Join collision_policy='alias' requires right_alias")
     elif policy != "alias" and right_alias:
