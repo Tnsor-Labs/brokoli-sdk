@@ -15,6 +15,7 @@ REQUEST_TIMEOUT = 10
 ALLOWED_DBT_COMMANDS = {"run", "test", "build", "seed", "snapshot", "compile", "debug", "clean"}
 
 VALID_SOURCE_API_RESPONSES = {"dataset", "scalar", "artifact"}
+VALID_JOIN_COLLISION_POLICIES = {"error", "prefix", "alias"}
 
 
 class ValidationIssue:
@@ -308,6 +309,19 @@ def _validate_join(name: str, config: dict[str, Any], result: ValidationResult) 
     if not config.get("left_key") and not config.get("right_key"):
         result.add_error(name, "on", "Join requires join keys (left_key=... / right_key=...)")
     _validate_enum(name, config, "join_type", _JOIN_TYPES, result)
+    policy = config.get("collision_policy", "prefix")
+    _validate_enum(name, config, "collision_policy", VALID_JOIN_COLLISION_POLICIES, result)
+    right_alias = config.get("right_alias", "")
+    if policy == "alias" and not isinstance(right_alias, str):
+        result.add_error(name, "right_alias", "Join alias collision policy requires a string right_alias")
+    elif policy == "alias" and not right_alias.strip():
+        result.add_error(name, "right_alias", "Join collision_policy='alias' requires right_alias")
+    elif policy != "alias" and right_alias:
+        result.add_error(
+            name,
+            "right_alias",
+            "Join right_alias is only valid with collision_policy='alias'",
+        )
 
 
 def _validate_dbt(name: str, config: dict[str, Any], result: ValidationResult) -> None:

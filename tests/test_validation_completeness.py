@@ -83,6 +83,24 @@ class TestEnumValidation:
             j >> sink_file("S", path="/o.json", format="json")
         assert _errors(p) == []
 
+    def test_join_alias_requires_right_alias(self):
+        with Pipeline("j") as p:
+            a = source_db("A", conn_id="c", query="select 1")
+            b = source_db("B", conn_id="c", query="select 2")
+            j = join("J", left=a, right=b, on="id")
+            p._nodes[j.node_id]["config"]["collision_policy"] = "alias"
+        errs = " ".join(_errors(p))
+        assert "right_alias" in errs
+
+    def test_join_collision_policy_typo_caught(self):
+        with Pipeline("j") as p:
+            a = source_db("A", conn_id="c", query="select 1")
+            b = source_db("B", conn_id="c", query="select 2")
+            j = join("J", left=a, right=b, on="id")
+            p._nodes[j.node_id]["config"]["collision_policy"] = "rename"
+        errs = " ".join(_errors(p))
+        assert "collision_policy" in errs and "rename" in errs
+
 
 class TestFanInPairing:
     def test_mismatched_fanin_lists_raise(self):
