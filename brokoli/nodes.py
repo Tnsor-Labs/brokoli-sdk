@@ -18,6 +18,7 @@ from brokoli.pipeline import (
     ScalarRef,
     _build_union_node,
 )
+from brokoli.schema import join_dataset_schema
 
 # UNSET is defined in its own module (not here) so brokoli.pipeline can use
 # it too without a circular import; imported here so existing call sites
@@ -159,6 +160,12 @@ def _input_args(input: Optional[NodeRef]) -> tuple[NodeRef, ...]:
     if input is None:
         return ()
     return (input,)
+
+
+def _declared_schema(ref: NodeRef) -> dict | None:
+    node = ref.pipeline._nodes.get(ref.node_id)
+    schema = node.get("config", {}).get("schema") if node else None
+    return schema if isinstance(schema, dict) else None
 
 
 # ===================================================================
@@ -553,9 +560,7 @@ def join(
     if not isinstance(right_alias, str):
         raise PipelineError(f"join({name!r}): right_alias must be a string.")
     if collision_policy == "alias" and not right_alias.strip():
-        raise PipelineError(
-            f"join({name!r}): collision_policy='alias' requires right_alias."
-        )
+        raise PipelineError(f"join({name!r}): collision_policy='alias' requires right_alias.")
     if collision_policy != "alias" and right_alias:
         raise PipelineError(
             f"join({name!r}): right_alias is only valid with collision_policy='alias'."
@@ -577,6 +582,17 @@ def join(
         args.append(left)
     if right is not None:
         args.append(right)
+    if left is not None and right is not None:
+        derived_schema = join_dataset_schema(
+            _declared_schema(left),
+            _declared_schema(right),
+            resolved_left,
+            resolved_right,
+            collision_policy,
+            right_alias,
+        )
+        if derived_schema is not None:
+            config["schema"] = derived_schema
     return _register_node("join", name, config, *args, ref_cls=DatasetRef, node_key=node_key)
 
 
