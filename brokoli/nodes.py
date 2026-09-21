@@ -513,6 +513,18 @@ def project(
     )
 
 
+def filter_rows(
+    name: str,
+    input: Optional[NodeRef] = None,
+    predicate: dict | None = None,
+    node_key: Optional[str] = None,
+) -> DatasetRef:
+    """Filter rows using the versioned native predicate expression DSL."""
+    if not isinstance(predicate, dict) or not predicate.get("op"):
+        raise ValueError("filter_rows requires a predicate expression")
+    return _register_node("filter", name, {"expression_version": 1, "predicate": dict(predicate)}, *_input_args(input), ref_cls=DatasetRef, node_key=node_key)
+
+
 def aggregate(
     name: str,
     input: Optional[NodeRef] = None,
@@ -706,6 +718,7 @@ def code(
     retry_backoff: str = "exponential",
     retry_delay: Any = UNSET,
     node_key: Optional[str] = None,
+    output_schema: Any = UNSET,
 ) -> NodeRef:
     """Custom code node -- run Python (or other) scripts.
 
@@ -724,7 +737,7 @@ def code(
     script's execution. (brokoli-sdk#48 -- previously not exposed here at
     all, even though every source/sink node had it.)
     """
-    optional: dict = {"python_path": python_path}
+    optional: dict = {"python_path": python_path, "output_schema": output_schema}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"language": language, "script": script}, optional)
     return _register_node("code", name, config, *_input_args(input), node_key=node_key)

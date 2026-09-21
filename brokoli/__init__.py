@@ -30,6 +30,7 @@ from brokoli.nodes import (
     transform,
     project,
     aggregate,
+    filter_rows,
     join,
     quality_check,
     sink_db,
@@ -43,7 +44,7 @@ from brokoli.nodes import (
     parallel,
     union,
 )
-from brokoli.expressions import add, column, coalesce, concat, divide, literal, multiply, subtract
+from brokoli.expressions import add, all_of, any_of, case_when, column, coalesce, concat, divide, eq, gt, gte, is_null, literal, lt, lte, logical_not, multiply, neq, subtract
 from brokoli.pagination import (
     offset_pages,
     cursor_pages,
@@ -132,6 +133,7 @@ __all__ = [
     "transform",
     "project",
     "aggregate",
+    "filter_rows",
     "column",
     "literal",
     "add",
@@ -140,6 +142,17 @@ __all__ = [
     "divide",
     "concat",
     "coalesce",
+    "eq",
+    "neq",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "is_null",
+    "logical_not",
+    "all_of",
+    "any_of",
+    "case_when",
     "join",
     "quality_check",
     "code",
