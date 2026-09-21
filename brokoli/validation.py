@@ -132,25 +132,53 @@ def _validate_source_api(name: str, config: dict[str, Any], result: ValidationRe
             strict = False
             if marker is not None:
                 if not isinstance(marker, dict):
-                    result.add_error(name, "execution.profile", "Execution profile must be an object")
+                    result.add_error(
+                        name, "execution.profile", "Execution profile must be an object"
+                    )
                 else:
                     if marker.get("version") != EXECUTION_PROFILE_VERSION:
-                        result.add_error(name, "execution.profile.version", "Unsupported execution profile version")
+                        result.add_error(
+                            name,
+                            "execution.profile.version",
+                            "Unsupported execution profile version",
+                        )
                     if not isinstance(marker.get("name"), str) or not marker.get("name"):
-                        result.add_error(name, "execution.profile.name", "Execution profile name is required")
+                        result.add_error(
+                            name, "execution.profile.name", "Execution profile name is required"
+                        )
                     strict = marker.get("strict", False)
                     if not isinstance(strict, bool):
-                        result.add_error(name, "execution.profile.strict", "Execution profile strict must be boolean")
+                        result.add_error(
+                            name,
+                            "execution.profile.strict",
+                            "Execution profile strict must be boolean",
+                        )
             for field in ("max_concurrency", "checkpoint_every", "page_max_retries"):
                 value = execution.get(field)
-                if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
-                    result.add_error(name, f"execution.{field}", f"{field} must be a positive integer")
+                if value is not None and (
+                    not isinstance(value, int) or isinstance(value, bool) or value < 1
+                ):
+                    result.add_error(
+                        name, f"execution.{field}", f"{field} must be a positive integer"
+                    )
             rps = execution.get("requests_per_second")
-            if rps is not None and (not isinstance(rps, (int, float)) or isinstance(rps, bool) or rps <= 0):
-                result.add_error(name, "execution.requests_per_second", "requests_per_second must be positive")
+            if rps is not None and (
+                not isinstance(rps, (int, float)) or isinstance(rps, bool) or rps <= 0
+            ):
+                result.add_error(
+                    name, "execution.requests_per_second", "requests_per_second must be positive"
+                )
             strategy = pagination.get("strategy") if isinstance(pagination, dict) else None
-            if strict and strategy in {"cursor", "next_link", "link_header"} and execution.get("max_concurrency", 1) > 1:
-                result.add_error(name, "execution.max_concurrency", f"strict execution profile requests concurrency for sequential pagination strategy {strategy}")
+            if (
+                strict
+                and strategy in {"cursor", "next_link", "link_header"}
+                and execution.get("max_concurrency", 1) > 1
+            ):
+                result.add_error(
+                    name,
+                    "execution.max_concurrency",
+                    f"strict execution profile requests concurrency for sequential pagination strategy {strategy}",
+                )
 
 
 def _validate_source_file(name: str, config: dict[str, Any], result: ValidationResult) -> None:
