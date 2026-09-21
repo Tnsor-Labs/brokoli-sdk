@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -180,7 +180,7 @@ def join_dataset_schema(
 
 def project_dataset_schema(
     input_schema: Mapping[str, Any] | None,
-    projections: list[Mapping[str, Any]],
+    projections: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
     """Derive a closed output schema for a native projection."""
     if input_schema is None:
@@ -188,9 +188,10 @@ def project_dataset_schema(
     columns = input_schema.get("columns")
     if not isinstance(columns, list):
         return None
-    by_name = {
-        column.get("name"): column.get("type") for column in columns if isinstance(column, Mapping)
-    }
+    by_name: dict[str, Any] = {}
+    for column in columns:
+        if isinstance(column, Mapping) and isinstance(column.get("name"), str):
+            by_name[column["name"]] = column.get("type")
     output = []
     for projection in projections:
         name = projection["name"]

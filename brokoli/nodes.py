@@ -498,7 +498,7 @@ def project(
     """Project native scalar expressions into a new dataset shape."""
     if not columns:
         raise ValueError("project requires a non-empty columns mapping")
-    projections = []
+    projections: list[dict[str, Any]] = []
     for output_name, expression in columns.items():
         if not output_name or not isinstance(expression, dict) or not expression.get("op"):
             raise ValueError("project columns require non-empty names and expression objects")
