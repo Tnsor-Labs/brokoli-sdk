@@ -36,7 +36,11 @@ def _validate_bptd(value: Any, path: str) -> None:
         raise PipelineError(f"{path} has an invalid BPTD kind {kind!r}")
     if kind == "enum":
         values = value.get("values")
-        if not isinstance(values, list) or not values or not all(isinstance(item, str) for item in values):
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(item, str) for item in values)
+        ):
             raise PipelineError(f"{path}.values must be a non-empty list of strings")
     elif kind == "array":
         _validate_bptd(value.get("items"), f"{path}.items")
@@ -51,7 +55,11 @@ def _validate_bptd(value: Any, path: str) -> None:
         seen: set[str] = set()
         for index, field in enumerate(fields):
             field_path = f"{path}.fields[{index}]"
-            if not isinstance(field, dict) or not isinstance(field.get("name"), str) or not field["name"]:
+            if (
+                not isinstance(field, dict)
+                or not isinstance(field.get("name"), str)
+                or not field["name"]
+            ):
                 raise PipelineError(f"{field_path} requires a non-empty field name")
             if field["name"] in seen:
                 raise PipelineError(f"{field_path} duplicates field {field['name']!r}")
@@ -80,7 +88,9 @@ def dataset_schema(
     output_columns = []
     for name, descriptor in columns.items():
         if not isinstance(name, str) or not name:
-            raise PipelineError(f"dataset_schema column name must be a non-empty string, got {name!r}")
+            raise PipelineError(
+                f"dataset_schema column name must be a non-empty string, got {name!r}"
+            )
         _validate_bptd(descriptor, f"column {name!r}")
         output_columns.append({"name": name, "type": dict(descriptor)})
 
@@ -122,10 +132,13 @@ def join_dataset_schema(
     collisions = [
         column["name"]
         for column in right_columns
-        if column["name"] in left_by_name and not (column["name"] == right_key and left_key == right_key)
+        if column["name"] in left_by_name
+        and not (column["name"] == right_key and left_key == right_key)
     ]
     if collision_policy == "error" and collisions:
-        raise PipelineError(f"join collision_policy='error' rejected columns: {', '.join(collisions)}")
+        raise PipelineError(
+            f"join collision_policy='error' rejected columns: {', '.join(collisions)}"
+        )
     if collision_policy == "alias" and not right_alias.strip():
         raise PipelineError("join collision_policy='alias' requires right_alias")
     if collision_policy not in {"error", "prefix", "alias"}:
@@ -145,13 +158,19 @@ def join_dataset_schema(
             while output_name in used:
                 output_name = f"right_{output_name}"
         if output_name in used:
-            raise PipelineError(f"join output schema cannot represent column {output_name!r} uniquely")
+            raise PipelineError(
+                f"join output schema cannot represent column {output_name!r} uniquely"
+            )
         used.add(output_name)
         derived = deepcopy(column)
         derived["name"] = output_name
         output.append(derived)
 
-    additional = "closed" if left.get("additional_columns") == right.get("additional_columns") == "closed" else "unknown"
+    additional = (
+        "closed"
+        if left.get("additional_columns") == right.get("additional_columns") == "closed"
+        else "unknown"
+    )
     return {
         "contract": "brokoli.dataset-schema/v1",
         "columns": output,
