@@ -176,6 +176,7 @@ def source_db(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    schema: Any = UNSET,
 ) -> DatasetRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
@@ -192,6 +193,7 @@ def source_db(
     optional: dict = {
         "conn_id": conn_id,
         "uri": uri,
+        "schema": schema,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
@@ -216,6 +218,7 @@ def source_api(
     value_path: Any = UNSET,
     pagination: Any = UNSET,
     node_key: Optional[str] = None,
+    schema: Any = UNSET,
 ) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -293,6 +296,8 @@ def source_api(
             ).with_execution(max_concurrency=4, requests_per_second=5),
         )
     """
+    if schema is not UNSET and response != "dataset":
+        raise PipelineError("source_api schema is only valid when response='dataset'")
     optional: dict = {
         "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
         "body": body,
@@ -300,6 +305,7 @@ def source_api(
         "params": dict(params) if params is not UNSET and params is not None else UNSET,
         "records": records,
         "value_path": value_path,
+        "schema": schema,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
@@ -339,6 +345,7 @@ def source_file(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    schema: Any = UNSET,
 ) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
 
@@ -347,7 +354,7 @@ def source_file(
         with Pipeline("CSV Import") as p:
             data = source_file("Read users", path="/data/users.csv", format="csv")
     """
-    optional: dict = {}
+    optional: dict = {"schema": schema}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"path": path, "format": format}, optional)
     return _register_node("source_file", name, config, ref_cls=DatasetRef, node_key=node_key)
