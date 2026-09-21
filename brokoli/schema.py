@@ -188,7 +188,9 @@ def project_dataset_schema(
     columns = input_schema.get("columns")
     if not isinstance(columns, list):
         return None
-    by_name = {column.get("name"): column.get("type") for column in columns if isinstance(column, Mapping)}
+    by_name = {
+        column.get("name"): column.get("type") for column in columns if isinstance(column, Mapping)
+    }
     output = []
     for projection in projections:
         name = projection["name"]
@@ -200,7 +202,9 @@ def project_dataset_schema(
     }
 
 
-def _expression_type(expression: Mapping[str, Any], columns: Mapping[str, Any], output_name: str) -> dict[str, Any]:
+def _expression_type(
+    expression: Mapping[str, Any], columns: Mapping[str, Any], output_name: str
+) -> dict[str, Any]:
     kind = expression.get("op")
     if kind == "column":
         path = expression.get("path")
@@ -208,13 +212,26 @@ def _expression_type(expression: Mapping[str, Any], columns: Mapping[str, Any], 
             raise PipelineError(f"project column {output_name!r} has an invalid column path")
         current = columns.get(path[0])
         if current is None:
-            raise PipelineError(f"project column {output_name!r} references missing field {path[0]!r}")
+            raise PipelineError(
+                f"project column {output_name!r} references missing field {path[0]!r}"
+            )
         for part in path[1:]:
             if not isinstance(current, Mapping) or current.get("kind") != "record":
-                raise PipelineError(f"project column {output_name!r} references missing nested field {part!r}")
-            current = next((field.get("type") for field in current.get("fields", []) if field.get("name") == part), None)
+                raise PipelineError(
+                    f"project column {output_name!r} references missing nested field {part!r}"
+                )
+            current = next(
+                (
+                    field.get("type")
+                    for field in current.get("fields", [])
+                    if field.get("name") == part
+                ),
+                None,
+            )
             if current is None:
-                raise PipelineError(f"project column {output_name!r} references missing nested field {part!r}")
+                raise PipelineError(
+                    f"project column {output_name!r} references missing nested field {part!r}"
+                )
         return deepcopy(current)
     if kind == "literal":
         value = expression.get("value")
@@ -248,8 +265,14 @@ def _expression_type(expression: Mapping[str, Any], columns: Mapping[str, Any], 
                 return result
     if kind == "case_when":
         branches = expression.get("branches", [])
-        types = [_expression_type(branch.get("then", {}), columns, output_name) for branch in branches]
+        types = [
+            _expression_type(branch.get("then", {}), columns, output_name) for branch in branches
+        ]
         else_type = _expression_type(expression.get("else", {}), columns, output_name)
-        if types and all(item.get("kind") == types[0].get("kind") for item in types) and else_type.get("kind") == types[0].get("kind"):
+        if (
+            types
+            and all(item.get("kind") == types[0].get("kind") for item in types)
+            and else_type.get("kind") == types[0].get("kind")
+        ):
             return types[0]
     return {"kind": "unknown"}
