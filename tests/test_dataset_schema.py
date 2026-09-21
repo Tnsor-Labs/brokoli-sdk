@@ -1,6 +1,6 @@
 import pytest
 
-from brokoli import Pipeline, dataset_schema, join, source_api
+from brokoli import Pipeline, column, dataset_schema, join, project, source_api
 from brokoli.exceptions import PipelineError
 
 
@@ -74,6 +74,25 @@ def test_join_preserves_decimal_precision_in_derived_schema():
 
     amount = next(column for column in p._nodes[merged.node_id]["config"]["schema"]["columns"] if column["name"] == "amount")
     assert amount["type"] == {"kind": "decimal", "precision": 20, "scale": 4}
+
+
+def test_project_preserves_referenced_field_schema():
+    source_schema = dataset_schema({"amount": {"kind": "decimal", "precision": 20, "scale": 4}})
+    with Pipeline("project-decimal-schema") as p:
+        source = source_api("Source", url="https://example.test/source", schema=source_schema)
+        shaped = project("Project", source, {"total": column("amount")})
+
+    assert p._nodes[shaped.node_id]["config"]["schema"]["columns"] == [{
+        "name": "total", "type": {"kind": "decimal", "precision": 20, "scale": 4},
+    }]
+
+
+def test_project_rejects_missing_declared_field():
+    source_schema = dataset_schema({"amount": {"kind": "decimal", "precision": 20, "scale": 4}})
+    with Pipeline("project-missing-field") as p:
+        source = source_api("Source", url="https://example.test/source", schema=source_schema)
+        with pytest.raises(PipelineError, match="missing field"):
+            project("Project", source, {"total": column("missing")})
 
 
 @pytest.mark.parametrize(

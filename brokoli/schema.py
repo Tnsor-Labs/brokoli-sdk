@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -176,3 +176,104 @@ def join_dataset_schema(
         "columns": output,
         "additional_columns": additional,
     }
+
+
+def project_dataset_schema(
+    input_schema: Mapping[str, Any] | None,
+    projections: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Derive a closed output schema for a native projection."""
+    if input_schema is None:
+        return None
+    columns = input_schema.get("columns")
+    if not isinstance(columns, list):
+        return None
+    by_name: dict[str, Any] = {}
+    for column in columns:
+        if isinstance(column, Mapping) and isinstance(column.get("name"), str):
+            by_name[column["name"]] = column.get("type")
+    output = []
+    for projection in projections:
+        name = projection["name"]
+        output.append({"name": name, "type": _expression_type(projection["expr"], by_name, name)})
+    return {
+        "contract": "brokoli.dataset-schema/v1",
+        "columns": output,
+        "additional_columns": "closed",
+    }
+
+
+def _expression_type(
+    expression: Mapping[str, Any], columns: Mapping[str, Any], output_name: str
+) -> dict[str, Any]:
+    kind = expression.get("op")
+    if kind == "column":
+        path = expression.get("path")
+        if not isinstance(path, list) or not path or not isinstance(path[0], str):
+            raise PipelineError(f"project column {output_name!r} has an invalid column path")
+        current = columns.get(path[0])
+        if current is None:
+            raise PipelineError(
+                f"project column {output_name!r} references missing field {path[0]!r}"
+            )
+        for part in path[1:]:
+            if not isinstance(current, Mapping) or current.get("kind") != "record":
+                raise PipelineError(
+                    f"project column {output_name!r} references missing nested field {part!r}"
+                )
+            current = next(
+                (
+                    field.get("type")
+                    for field in current.get("fields", [])
+                    if field.get("name") == part
+                ),
+                None,
+            )
+            if current is None:
+                raise PipelineError(
+                    f"project column {output_name!r} references missing nested field {part!r}"
+                )
+        return deepcopy(current)
+    if kind == "literal":
+        value = expression.get("value")
+        if isinstance(value, bool):
+            return {"kind": "boolean"}
+        if isinstance(value, int):
+            return {"kind": "int64"}
+        if isinstance(value, float):
+            return {"kind": "float64"}
+        if isinstance(value, str):
+            return {"kind": "string"}
+        return {"kind": "unknown"}
+    if kind == "concat":
+        return {"kind": "string"}
+    if kind in {"eq", "neq", "lt", "lte", "gt", "gte", "and", "or", "not", "is_null"}:
+        return {"kind": "boolean"}
+    if kind in {"add", "subtract", "multiply", "divide"}:
+        left = _expression_type(expression.get("left", {}), columns, output_name)
+        right = _expression_type(expression.get("right", {}), columns, output_name)
+        if left.get("kind") == right.get("kind") == "decimal" and kind != "divide":
+            return left
+        if left.get("kind") == "float64" or right.get("kind") == "float64" or kind == "divide":
+            return {"kind": "float64"}
+        if left.get("kind") == right.get("kind") == "int64":
+            return {"kind": "int64"}
+        return {"kind": "unknown"}
+    if kind == "coalesce":
+        for argument in expression.get("args", []):
+            result = _expression_type(argument, columns, output_name)
+            if result.get("kind") != "unknown":
+                return result
+    if kind == "case_when":
+        branches = expression.get("branches", [])
+        types = [
+            _expression_type(branch.get("then", {}), columns, output_name) for branch in branches
+        ]
+        else_type = _expression_type(expression.get("else", {}), columns, output_name)
+        if (
+            types
+            and all(item.get("kind") == types[0].get("kind") for item in types)
+            and else_type.get("kind") == types[0].get("kind")
+        ):
+            return types[0]
+    return {"kind": "unknown"}
