@@ -104,4 +104,10 @@ def any_of(*values: Any) -> Expression:
 def case_when(*branches: tuple[Any, Any], otherwise: Any = None) -> Expression:
     if not branches:
         raise ValueError("case_when requires at least one branch")
-    return {"op": "case_when", "branches": [{"when": _expression(when), "then": _expression(then)} for when, then in branches], "else": _expression(otherwise)}
+    return {
+        "op": "case_when",
+        "branches": [
+            {"when": _expression(when), "then": _expression(then)} for when, then in branches
+        ],
+        "else": _expression(otherwise),
+    }

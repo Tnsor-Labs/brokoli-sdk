@@ -522,7 +522,14 @@ def filter_rows(
     """Filter rows using the versioned native predicate expression DSL."""
     if not isinstance(predicate, dict) or not predicate.get("op"):
         raise ValueError("filter_rows requires a predicate expression")
-    return _register_node("filter", name, {"expression_version": 1, "predicate": dict(predicate)}, *_input_args(input), ref_cls=DatasetRef, node_key=node_key)
+    return _register_node(
+        "filter",
+        name,
+        {"expression_version": 1, "predicate": dict(predicate)},
+        *_input_args(input),
+        ref_cls=DatasetRef,
+        node_key=node_key,
+    )
 
 
 def aggregate(

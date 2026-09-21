@@ -44,7 +44,27 @@ from brokoli.nodes import (
     parallel,
     union,
 )
-from brokoli.expressions import add, all_of, any_of, case_when, column, coalesce, concat, divide, eq, gt, gte, is_null, literal, lt, lte, logical_not, multiply, neq, subtract
+from brokoli.expressions import (
+    add,
+    all_of,
+    any_of,
+    case_when,
+    column,
+    coalesce,
+    concat,
+    divide,
+    eq,
+    gt,
+    gte,
+    is_null,
+    literal,
+    lt,
+    lte,
+    logical_not,
+    multiply,
+    neq,
+    subtract,
+)
 from brokoli.pagination import (
     offset_pages,
     cursor_pages,
