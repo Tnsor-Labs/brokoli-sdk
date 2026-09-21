@@ -64,6 +64,18 @@ def test_join_rejects_incompatible_declared_key_types():
             join("Merge", left, right, on="id")
 
 
+def test_join_preserves_decimal_precision_in_derived_schema():
+    left_schema = dataset_schema({"id": {"kind": "int64"}, "amount": {"kind": "decimal", "precision": 20, "scale": 4}})
+    right_schema = dataset_schema({"id": {"kind": "int64"}, "label": {"kind": "string"}})
+    with Pipeline("join-decimal-schema") as p:
+        left = source_api("Left", url="https://example.test/left", schema=left_schema)
+        right = source_api("Right", url="https://example.test/right", schema=right_schema)
+        merged = join("Merge", left, right, on="id")
+
+    amount = next(column for column in p._nodes[merged.node_id]["config"]["schema"]["columns"] if column["name"] == "amount")
+    assert amount["type"] == {"kind": "decimal", "precision": 20, "scale": 4}
+
+
 @pytest.mark.parametrize(
     "columns, additional_columns, message",
     [
