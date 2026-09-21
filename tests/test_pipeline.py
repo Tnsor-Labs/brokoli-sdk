@@ -180,6 +180,20 @@ class TestNodeTypes:
         assert aggregate_node["type"] == "aggregate"
         assert aggregate_node["config"]["agg_fields"][0]["function"] == "count_distinct"
 
+    def test_native_filter_predicate_and_code_output_schema(self):
+        from brokoli import code, dataset_schema, eq, filter_rows, column, literal
+
+        with Pipeline("Native filter") as p:
+            source = source_file("Input", path="input.json")
+            filtered = filter_rows("Filter", source, eq(column("status"), literal("ready")))
+            code("Enrich", filtered, script="output_data = {'columns': columns, 'rows': rows}", output_schema=dataset_schema({"id": {"kind": "int64"}}))
+
+        filter_node = p._nodes[filtered.node_id]
+        assert filter_node["type"] == "filter"
+        assert filter_node["config"]["expression_version"] == 1
+        assert filter_node["config"]["predicate"]["op"] == "eq"
+        assert p._nodes["enrich_1"]["config"]["output_schema"]["contract"] == "brokoli.dataset-schema/v1"
+
     def test_join(self):
         with Pipeline("test") as p:
             a = source_db("A", query="SELECT 1")
