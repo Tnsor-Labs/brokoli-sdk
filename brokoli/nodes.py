@@ -18,7 +18,7 @@ from brokoli.pipeline import (
     ScalarRef,
     _build_union_node,
 )
-from brokoli.schema import join_dataset_schema
+from brokoli.schema import join_dataset_schema, project_dataset_schema
 
 # UNSET is defined in its own module (not here) so brokoli.pipeline can use
 # it too without a circular import; imported here so existing call sites
@@ -503,10 +503,20 @@ def project(
         if not output_name or not isinstance(expression, dict) or not expression.get("op"):
             raise ValueError("project columns require non-empty names and expression objects")
         projections.append({"name": output_name, "expr": dict(expression)})
+    input_schema = None
+    if input is not None:
+        input_schema = input.pipeline._nodes[input.node_id].get("config", {}).get("schema")
+    config = {
+        "expression_version": 1,
+        "projections": projections,
+    }
+    derived_schema = project_dataset_schema(input_schema, projections)
+    if derived_schema is not None:
+        config["schema"] = derived_schema
     return _register_node(
         "project",
         name,
-        {"expression_version": 1, "projections": projections},
+        config,
         *_input_args(input),
         ref_cls=DatasetRef,
         node_key=node_key,
