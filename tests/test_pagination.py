@@ -11,10 +11,8 @@ Covers:
 - New validation.py rules: records/value_path mutual exclusion, pagination
   requiring response="dataset", and unknown pagination strategy names.
 
-Scope reminder: everything here is SDK-side declarative-IR-config
-production. None of it executes HTTP requests or expands pagination into
-concrete page fetches -- that's backend (physical-planner) work, tracked
-separately and not yet started.
+Scope reminder: these tests cover SDK-side declarative IR production. HTTP
+requests and page expansion are exercised by the backend engine tests.
 """
 
 from brokoli import (
@@ -25,6 +23,9 @@ from brokoli import (
     numbered_pages,
     next_link_pages,
     link_header_pages,
+    public_api_safe,
+    high_throughput,
+    strict,
 )
 from brokoli.pagination import PaginationStrategy, ExecutionPolicy
 from brokoli.validation import validate_pipeline
@@ -281,6 +282,44 @@ class TestSourceApiPagination:
             "end_flag": "endOfRecords",
         }
         assert "execution" not in config
+
+
+class TestExecutionProfiles:
+    def test_profiles_expand_to_explicit_versioned_policy(self):
+        safe = public_api_safe()
+        assert safe["profile"] == {"name": "public_api_safe", "version": 1, "strict": False}
+        assert safe["max_concurrency"] == 2
+        assert safe["requests_per_second"] == 2
+        assert safe["page_max_retries"] == 3
+
+    def test_profile_and_pagination_policy_merge_with_pagination_override(self):
+        with Pipeline("test") as p:
+            source_api(
+                "S", url="https://x", execution_profile=public_api_safe(),
+                pagination=offset_pages(page_size=10).with_execution(max_concurrency=5),
+            )
+        execution = p.to_json()["nodes"][0]["config"]["execution"]
+        assert execution["max_concurrency"] == 5
+        assert execution["requests_per_second"] == 2
+        assert execution["profile"]["version"] == 1
+        assert p.to_json()["nodes"][0]["config"]["timeout"] == 30
+        assert p.to_json()["nodes"][0]["config"]["max_retries"] == 3
+
+    def test_high_throughput_requires_explicit_rate(self):
+        profile = high_throughput(requests_per_second=20)
+        assert profile["requests_per_second"] == 20
+
+    def test_strict_profile_is_marked_strict(self):
+        assert strict()["profile"]["strict"] is True
+
+    def test_strict_profile_rejects_sequential_concurrency(self):
+        with Pipeline("test") as p:
+            source_api(
+                "S", url="https://x", profile=strict(),
+                pagination=cursor_pages("next", "cursor").with_execution(max_concurrency=2),
+            )
+        result = validate_pipeline(p)
+        assert any(issue.field == "execution.max_concurrency" for issue in result.errors)
 
     def test_pagination_with_execution_serializes_execution_block(self):
         with Pipeline("test") as p:

@@ -216,7 +216,7 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
         # Plain pagination long predates feature advertising; the
         # execution policy block is what implies checkpoint/page-retry
         # runtime semantics.
-        if "execution" in config:
+        if node_type == "source_api" and "execution" in config and "pagination" in config:
             required.add("pagination-checkpoints")
         # emit()/begin_emit() are wrapper contract features (ADR-029,
         # core "code-streaming-emit"): on a server whose wrapper

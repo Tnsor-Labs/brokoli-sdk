@@ -72,6 +72,7 @@ from brokoli.pagination import (
     next_link_pages,
     link_header_pages,
 )
+from brokoli.execution_profiles import high_throughput, public_api_safe, strict
 from brokoli.resources import (
     Connection,
     ResourceRef,
@@ -193,12 +194,15 @@ __all__ = [
     # archive @task(package="bundle") compiles to; deployers upload these
     # before the referencing pipeline.
     "TaskBundle",
-    # source_api pagination DSL (declarative config only -- see brokoli.pagination)
+    # source_api pagination DSL and portable execution profiles
     "offset_pages",
     "cursor_pages",
     "numbered_pages",
     "next_link_pages",
     "link_header_pages",
+    "public_api_safe",
+    "high_throughput",
+    "strict",
     # Normalized comparison artifacts
     "normalize_ir",
     "canonical_json",
