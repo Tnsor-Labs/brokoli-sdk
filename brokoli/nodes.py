@@ -226,6 +226,8 @@ def source_api(
     pagination: Any = UNSET,
     node_key: Optional[str] = None,
     schema: Any = UNSET,
+    execution_profile: Any = UNSET,
+    profile: Any = UNSET,
 ) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -280,13 +282,12 @@ def source_api(
     concurrency/rate-limit/retry/checkpoint policy. Requires
     ``response="dataset"``.
 
-    This function only produces the declarative ``pagination`` /
-    ``execution`` config blocks in the compiled IR. Expanding a
-    paginated source into concrete per-page fetch instances, running
-    them under the configured concurrency/rate-limit policy, and
-    stitching per-page results back together is backend
-    (physical-planner) work -- separate, not yet implemented, and out
-    of scope for this SDK.
+    ``profile=public_api_safe()`` (or ``execution_profile=...``) expands a
+    portable, versioned source execution policy into explicit IR values.
+
+    This function produces the declarative ``pagination`` / ``execution``
+    config blocks consumed by the backend. The backend expands pages, applies
+    concurrency/rate-limit/retry/checkpoint policy, and stitches the result.
 
     Example (the RFC's GBIF worked example)::
 
@@ -314,6 +315,17 @@ def source_api(
         "value_path": value_path,
         "schema": schema,
     }
+    selected_profile = execution_profile if execution_profile is not UNSET else profile
+    if execution_profile is not UNSET and profile is not UNSET:
+        raise PipelineError("source_api accepts only one of profile or execution_profile")
+    if selected_profile is not UNSET and selected_profile is not None:
+        if not isinstance(selected_profile, dict):
+            raise PipelineError("source_api execution_profile must be a profile config dict")
+        profile_config = dict(selected_profile)
+        for key in ("timeout", "max_retries", "retry_backoff", "retry_delay"):
+            if key in profile_config:
+                optional[key] = profile_config.pop(key)
+        optional["execution"] = profile_config
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
     if pagination is not UNSET and pagination is not None:
@@ -321,7 +333,7 @@ def source_api(
             optional["pagination"] = pagination.to_config()
             exec_config = pagination.execution_config()
             if exec_config:
-                optional["execution"] = exec_config
+                optional.setdefault("execution", {}).update(exec_config)
         elif isinstance(pagination, dict):
             optional["pagination"] = dict(pagination)
         else:

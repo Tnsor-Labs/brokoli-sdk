@@ -7,12 +7,9 @@ serializes into the ``pagination`` block of a ``source_api`` node's
 ``execution`` block describing concurrency/rate-limit/retry/checkpoint
 policy (RFC V2 §14.4).
 
-Scope note: this module produces *declarative config only*. Expanding a
-paginated source into concrete per-page fetch instances, running them
-under the configured concurrency/rate-limit policy, retrying individual
-pages, and stitching results back together is backend (physical-planner)
-work that is not implemented here and, as of this writing, has not been
-started on the Go side either. Nothing in this module performs HTTP
+Scope note: this module produces *declarative config only*. HTTP requests and
+page expansion are performed by the backend; the emitted policy is consumed by
+the backend fetcher and physical planner. Nothing in this module performs HTTP
 requests or loops over pages.
 """
 
