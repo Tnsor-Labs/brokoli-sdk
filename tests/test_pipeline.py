@@ -162,6 +162,24 @@ class TestNodeTypes:
         assert node["type"] == "transform"
         assert len(node["config"]["rules"]) == 1
 
+    def test_native_project_and_aggregate(self):
+        from brokoli import add, aggregate, column, literal, project
+
+        with Pipeline("Native") as p:
+            source = source_file("Input", path="input.json")
+            shaped = project("Project", source, {"score": add(column("amount"), literal(1))})
+            aggregate("Totals", shaped, group_by=["status"], aggregations=[{"column": "score", "function": "count_distinct", "alias": "scores"}])
+
+        project_node = p._nodes[shaped.node_id]
+        assert project_node["type"] == "project"
+        assert project_node["config"] == {
+            "expression_version": 1,
+            "projections": [{"name": "score", "expr": {"op": "add", "left": {"op": "column", "path": ["amount"]}, "right": {"op": "literal", "value": 1}}}],
+        }
+        aggregate_node = p._nodes["totals_1"]
+        assert aggregate_node["type"] == "aggregate"
+        assert aggregate_node["config"]["agg_fields"][0]["function"] == "count_distinct"
+
     def test_join(self):
         with Pipeline("test") as p:
             a = source_db("A", query="SELECT 1")

@@ -28,6 +28,8 @@ from brokoli.nodes import (
     source_api,
     source_file,
     transform,
+    project,
+    aggregate,
     join,
     quality_check,
     sink_db,
@@ -41,6 +43,7 @@ from brokoli.nodes import (
     parallel,
     union,
 )
+from brokoli.expressions import add, column, coalesce, concat, divide, literal, multiply, subtract
 from brokoli.pagination import (
     offset_pages,
     cursor_pages,
@@ -127,6 +130,16 @@ __all__ = [
     "source_file",
     # Built-in processing
     "transform",
+    "project",
+    "aggregate",
+    "column",
+    "literal",
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "concat",
+    "coalesce",
     "join",
     "quality_check",
     "code",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Any, TypeVar
+from typing import Optional, Any, TypeVar, Mapping
 
 from brokoli.exceptions import ContextError, PipelineError
 from brokoli.pagination import PaginationStrategy
@@ -483,6 +483,52 @@ def transform(
         "transform",
         name,
         config,
+        *_input_args(input),
+        ref_cls=DatasetRef,
+        node_key=node_key,
+    )
+
+
+def project(
+    name: str,
+    input: Optional[NodeRef] = None,
+    columns: Mapping[str, dict] | None = None,
+    node_key: Optional[str] = None,
+) -> DatasetRef:
+    """Project native scalar expressions into a new dataset shape."""
+    if not columns:
+        raise ValueError("project requires a non-empty columns mapping")
+    projections = []
+    for output_name, expression in columns.items():
+        if not output_name or not isinstance(expression, dict) or not expression.get("op"):
+            raise ValueError("project columns require non-empty names and expression objects")
+        projections.append({"name": output_name, "expr": dict(expression)})
+    return _register_node(
+        "project",
+        name,
+        {"expression_version": 1, "projections": projections},
+        *_input_args(input),
+        ref_cls=DatasetRef,
+        node_key=node_key,
+    )
+
+
+def aggregate(
+    name: str,
+    input: Optional[NodeRef] = None,
+    group_by: list[str] | None = None,
+    aggregations: list[dict] | None = None,
+    node_key: Optional[str] = None,
+) -> DatasetRef:
+    """Aggregate a dataset natively using explicit group and measure fields."""
+    if not group_by:
+        raise ValueError("aggregate requires a non-empty group_by list")
+    if not aggregations:
+        raise ValueError("aggregate requires a non-empty aggregations list")
+    return _register_node(
+        "aggregate",
+        name,
+        {"group_by": list(group_by), "agg_fields": [dict(field) for field in aggregations]},
         *_input_args(input),
         ref_cls=DatasetRef,
         node_key=node_key,
