@@ -178,6 +178,7 @@ class TestNodeTypes:
         }
         aggregate_node = p._nodes["totals_1"]
         assert aggregate_node["type"] == "aggregate"
+        assert aggregate_node["config"]["expression_version"] == 1
         assert aggregate_node["config"]["agg_fields"][0]["function"] == "count_distinct"
 
     def test_native_filter_predicate_and_code_output_schema(self):

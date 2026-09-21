@@ -569,7 +569,11 @@ def aggregate(
     return _register_node(
         "aggregate",
         name,
-        {"group_by": list(group_by), "agg_fields": [dict(field) for field in aggregations]},
+        {
+            "expression_version": 1,
+            "group_by": list(group_by),
+            "agg_fields": [dict(field) for field in aggregations],
+        },
         *_input_args(input),
         ref_cls=DatasetRef,
         node_key=node_key,
