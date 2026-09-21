@@ -282,6 +282,37 @@ class TestJoinKeys:
         assert node["config"]["left_key"] == "a=b"
         assert node["config"]["right_key"] == "a=b"
 
+    def test_collision_policy_and_right_alias_are_emitted(self):
+        with Pipeline("test") as p:
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            j = join(
+                "Merge",
+                a,
+                b,
+                on="id",
+                collision_policy="alias",
+                right_alias="customer",
+            )
+
+        node = p._nodes[j.node_id]
+        assert node["config"]["collision_policy"] == "alias"
+        assert node["config"]["right_alias"] == "customer"
+
+    def test_alias_collision_policy_requires_right_alias(self):
+        with Pipeline("test"):
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            with pytest.raises(PipelineError, match="right_alias"):
+                join("Merge", a, b, on="id", collision_policy="alias")
+
+    def test_unknown_collision_policy_is_rejected(self):
+        with Pipeline("test"):
+            a = source_db("A", query="SELECT 1")
+            b = source_db("B", query="SELECT 2")
+            with pytest.raises(PipelineError, match="collision_policy"):
+                join("Merge", a, b, on="id", collision_policy="rename")
+
 
 class TestTaskDecorator:
     def test_task_basic(self):

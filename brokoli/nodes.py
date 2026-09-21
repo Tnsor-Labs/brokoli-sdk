@@ -488,6 +488,8 @@ def join(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    collision_policy: str = "prefix",
+    right_alias: str = "",
 ) -> DatasetRef:
     """Join two datasets -- inner, left, right, or full.
 
@@ -510,6 +512,11 @@ def join(
     but cannot be combined with ``left_key``/``right_key`` -- brokoli-sdk#51:
     that split-on-"=" string form was undocumented and silently mis-splits a
     column name that itself contains "=".
+
+    ``collision_policy`` controls the output schema when right-side columns
+    overlap the left side. ``prefix`` preserves the legacy ``right_`` naming,
+    ``error`` rejects non-key collisions, and ``alias`` prefixes retained
+    right-side columns with ``right_alias``.
     """
     if on and (left_key or right_key):
         raise PipelineError(
@@ -530,11 +537,29 @@ def join(
     else:
         resolved_left = resolved_right = on
 
+    valid_collision_policies = {"error", "prefix", "alias"}
+    if not isinstance(collision_policy, str) or collision_policy not in valid_collision_policies:
+        raise PipelineError(
+            f"join({name!r}): collision_policy must be one of "
+            f"{sorted(valid_collision_policies)}, got {collision_policy!r}."
+        )
+    if not isinstance(right_alias, str):
+        raise PipelineError(f"join({name!r}): right_alias must be a string.")
+    if collision_policy == "alias" and not right_alias.strip():
+        raise PipelineError(f"join({name!r}): collision_policy='alias' requires right_alias.")
+    if collision_policy != "alias" and right_alias:
+        raise PipelineError(
+            f"join({name!r}): right_alias is only valid with collision_policy='alias'."
+        )
+
     config: dict = {
         "join_type": how,
         "left_key": resolved_left,
         "right_key": resolved_right,
+        "collision_policy": collision_policy,
     }
+    if right_alias:
+        config["right_alias"] = right_alias
 
     _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
 
