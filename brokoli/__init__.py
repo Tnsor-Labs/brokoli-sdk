@@ -21,6 +21,7 @@ from brokoli.decorators import (
     sensor,
 )
 from brokoli.result import TaskResult
+from brokoli.schema import dataset_schema
 from brokoli.parsing import ParseError
 from brokoli.nodes import (
     source_db,
@@ -90,6 +91,7 @@ __all__ = [
     # Core
     "Pipeline",
     "TaskResult",
+    "dataset_schema",
     "ParseError",
     # Typed node references (brokoli-sdk#2) -- see brokoli.pipeline. These are
     # authoring-time DATA refs: they point at another node's output.

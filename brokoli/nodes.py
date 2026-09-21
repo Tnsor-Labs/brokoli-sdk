@@ -18,6 +18,7 @@ from brokoli.pipeline import (
     ScalarRef,
     _build_union_node,
 )
+from brokoli.schema import join_dataset_schema
 
 # UNSET is defined in its own module (not here) so brokoli.pipeline can use
 # it too without a circular import; imported here so existing call sites
@@ -161,6 +162,12 @@ def _input_args(input: Optional[NodeRef]) -> tuple[NodeRef, ...]:
     return (input,)
 
 
+def _declared_schema(ref: NodeRef) -> dict | None:
+    node = ref.pipeline._nodes.get(ref.node_id)
+    schema = node.get("config", {}).get("schema") if node else None
+    return schema if isinstance(schema, dict) else None
+
+
 # ===================================================================
 # Sources
 # ===================================================================
@@ -176,6 +183,7 @@ def source_db(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    schema: Any = UNSET,
 ) -> DatasetRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
@@ -192,6 +200,7 @@ def source_db(
     optional: dict = {
         "conn_id": conn_id,
         "uri": uri,
+        "schema": schema,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
@@ -216,6 +225,7 @@ def source_api(
     value_path: Any = UNSET,
     pagination: Any = UNSET,
     node_key: Optional[str] = None,
+    schema: Any = UNSET,
 ) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -293,6 +303,8 @@ def source_api(
             ).with_execution(max_concurrency=4, requests_per_second=5),
         )
     """
+    if schema is not UNSET and response != "dataset":
+        raise PipelineError("source_api schema is only valid when response='dataset'")
     optional: dict = {
         "headers": dict(headers) if headers is not UNSET and headers is not None else UNSET,
         "body": body,
@@ -300,6 +312,7 @@ def source_api(
         "params": dict(params) if params is not UNSET and params is not None else UNSET,
         "records": records,
         "value_path": value_path,
+        "schema": schema,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
 
@@ -339,6 +352,7 @@ def source_file(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    schema: Any = UNSET,
 ) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
 
@@ -347,7 +361,7 @@ def source_file(
         with Pipeline("CSV Import") as p:
             data = source_file("Read users", path="/data/users.csv", format="csv")
     """
-    optional: dict = {}
+    optional: dict = {"schema": schema}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"path": path, "format": format}, optional)
     return _register_node("source_file", name, config, ref_cls=DatasetRef, node_key=node_key)
@@ -568,6 +582,17 @@ def join(
         args.append(left)
     if right is not None:
         args.append(right)
+    if left is not None and right is not None:
+        derived_schema = join_dataset_schema(
+            _declared_schema(left),
+            _declared_schema(right),
+            resolved_left,
+            resolved_right,
+            collision_policy,
+            right_alias,
+        )
+        if derived_schema is not None:
+            config["schema"] = derived_schema
     return _register_node("join", name, config, *args, ref_cls=DatasetRef, node_key=node_key)
 
 
