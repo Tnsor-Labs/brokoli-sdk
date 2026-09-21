@@ -72,6 +72,7 @@ NODE_TYPE_CAPABILITIES: dict[str, list[str]] = {
     "dataset_filter": ["compute", "dataset-output"],
     "project": ["compute", "dataset-output"],
     "aggregate": ["compute", "dataset-output"],
+    "filter": ["compute", "dataset-output"],
 }
 DEFAULT_CAPABILITIES: tuple[str, ...] = ("compute",)
 
