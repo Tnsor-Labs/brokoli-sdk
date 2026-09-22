@@ -365,6 +365,7 @@ def source_file(
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
     schema: Any = UNSET,
+    conn_id: Any = UNSET,
 ) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
 
@@ -373,7 +374,7 @@ def source_file(
         with Pipeline("CSV Import") as p:
             data = source_file("Read users", path="/data/users.csv", format="csv")
     """
-    optional: dict = {"schema": schema}
+    optional: dict = {"schema": schema, "conn_id": conn_id}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"path": path, "format": format}, optional)
     return _register_node("source_file", name, config, ref_cls=DatasetRef, node_key=node_key)
@@ -855,6 +856,7 @@ def sink_file(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    conn_id: Any = UNSET,
 ) -> NodeRef:
     """File sink -- write data to CSV, JSON, Parquet, etc.
 
@@ -865,7 +867,7 @@ def sink_file(
             sink_file("Save report", input=data, path="/output/report.parquet",
                       format="parquet", compress="snappy")
     """
-    optional: dict = {"compress": compress}
+    optional: dict = {"compress": compress, "conn_id": conn_id}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"path": path, "format": format}, optional)
     return _register_node("sink_file", name, config, *_input_args(input), node_key=node_key)
