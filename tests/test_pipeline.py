@@ -181,7 +181,7 @@ class TestDbtOptions:
         # The server reads config["vars"] as a string; a dict was dropped.
         with Pipeline("dbt") as p:
             dbt("Build", command="build", vars={"run_date": "2026-10-14", "full": True})
-        assert p.to_json()["nodes"][0]["config"]["vars"] == '{"full": true, "run_date": "2026-10-14"}'
+        assert p.to_json()["nodes"][0]["config"]["vars"] == '{"full":true,"run_date":"2026-10-14"}'
 
     def test_vars_string_passes_through(self):
         with Pipeline("dbt") as p:
