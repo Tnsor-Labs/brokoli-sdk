@@ -1093,6 +1093,15 @@ def migrate(
     return _register_node("migrate", name, config, ref_cls=DatasetRef, node_key=node_key)
 
 
+def _dbt_vars(vars: Any) -> Any:
+    """dbt ``--vars`` as the server reads it: a string. A mapping becomes
+    compact JSON with sorted keys, so the same vars always compile to the
+    same IR (and the TypeScript SDK emits the same string)."""
+    if isinstance(vars, Mapping):
+        return json.dumps(dict(vars), sort_keys=True, separators=(",", ":"))
+    return vars
+
+
 def dbt(
     name: str,
     command: str = "run",
@@ -1136,7 +1145,7 @@ def dbt(
         "target": target,
         "select": select,
         "profiles_dir": profiles_dir,
-        "vars": json.dumps(dict(vars), sort_keys=True) if isinstance(vars, Mapping) else vars,
+        "vars": _dbt_vars(vars),
         "conn_id": conn_id,
         "target_schema": target_schema,
         "output_model": output_model,
