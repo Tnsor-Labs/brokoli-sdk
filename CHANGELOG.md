@@ -33,6 +33,29 @@ those are called out explicitly.
 - **`dbt()` options `conn_id`, `target_schema` and `output_model`**: build
   the dbt profile from a Brokoli connection, set its schema, and pick the
   model whose table the node hands downstream.
+- **Partitioned `migrate()`**: `partition={"column", "strategy",
+  "boundaries", "max_parallel"}` copies ranges in parallel, each retried on
+  its own (core v0.17.0). Validated locally the way the server does it: an
+  upsert whose `key_columns` include the partition column, into an existing
+  table. `datetime` boundaries are sent as RFC3339.
+- **`pool=`** on every node that reads or writes data, to share a
+  concurrency limit across nodes on the server.
+- **`code()` options `max_memory_mb`, `max_cpu_seconds` and `node_path`**;
+  **`sink_db()` options `create_table` and `table_engine`** (ClickHouse);
+  **`source_api(source_type=...)`**.
+- **Workspaces.** `Client(workspace=...)`, `BROKOLI_WORKSPACE`, the CLI's
+  `--workspace` and a named environment's `workspace` send `X-Workspace-ID`
+  on every request, including validation's connection check. Without one,
+  the server uses your default workspace.
+- **`Client.dry_run()`, `Client.backfill()` and `Run.resume()`** (also
+  `Client.resume(run_id)`). `resume` returns the new run, and takes
+  `from_node` to re-run from a chosen node onward. `backfill` takes dates
+  as whole days or `datetime`s/RFC3339 strings as instants.
+- **Validation refuses `${param.x}` in a code script**, as the server has
+  since v0.15.0; read `params["x"]` instead.
+- **The vendored IR schemas are refreshed from core v0.18.12**, and
+  `pipeline-ir-2.2.json` (with `task-interface-v1.json`) is now vendored,
+  so pipelines with task interfaces are schema-checked too.
 - **Deploy checks the node types.** `GET /api/capabilities` lists the node
   types a server knows and the ones its operator disabled
   (`disabled_node_types`); deploy now refuses a pipeline that uses either,

@@ -58,6 +58,10 @@ class FakeBrokoli(BaseHTTPRequestHandler):
     task_uploads: list = []  # ("created"|"repeat", digest)
     task_bundle_max_bytes = 64 * 1024 * 1024
     events: list = []  # "upload <digest>" / "create" / "update" ordering log
+    # Every request's (method, path, X-Workspace-ID header or None).
+    seen: list = []
+    # POST bodies of run operations: "dry-run", "backfill", "resume".
+    run_ops: list = []
 
     def log_message(self, *args):  # noqa: D102 - silence test output
         pass
@@ -80,6 +84,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length)) if length else {}
 
     def do_POST(self):
+        type(self).seen.append(("POST", self.path, self.headers.get("X-Workspace-ID")))
         cls = type(self)
         if self.path == "/api/auth/login":
             body = self._read_body()
@@ -139,6 +144,17 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             cls.task_uploads.append(("created", digest))
             cls.events.append(f"upload {digest}")
             return self._json(201, {"digest": digest, "status": "stored"})
+        if self.path.endswith("/dry-run") and self.path.startswith("/api/pipelines/"):
+            cls.run_ops.append(("dry-run", self.path.split("/")[3], self._read_body()))
+            return self._json(200, {"results": [{"node_id": "n1", "rows": 1}]})
+        if self.path.endswith("/backfill") and self.path.startswith("/api/pipelines/"):
+            body = self._read_body()
+            cls.run_ops.append(("backfill", self.path.split("/")[3], body))
+            return self._json(202, {"intervals": 3, "concurrency": 1})
+        if self.path.endswith("/resume") and self.path.startswith("/api/runs/"):
+            body = self._read_body()
+            cls.run_ops.append(("resume", self.path.split("/")[3], body))
+            return self._json(202, {"id": "resumed-1", "status": "pending"})
         if self.path.endswith("/run") and self.path.startswith("/api/pipelines/"):
             pid = self.path.split("/")[3]
             body = self._read_body()
@@ -167,6 +183,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
         return self._json(404, {"error": "nope"})
 
     def do_PUT(self):
+        type(self).seen.append(("PUT", self.path, self.headers.get("X-Workspace-ID")))
         cls = type(self)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})
@@ -178,6 +195,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
         return self._json(404, {"error": "nope"})
 
     def do_DELETE(self):
+        type(self).seen.append(("DELETE", self.path, self.headers.get("X-Workspace-ID")))
         cls = type(self)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})
@@ -197,6 +215,7 @@ class FakeBrokoli(BaseHTTPRequestHandler):
         return self._json(404, {"error": "nope"})
 
     def do_GET(self):
+        type(self).seen.append(("GET", self.path, self.headers.get("X-Workspace-ID")))
         cls = type(self)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})
@@ -278,6 +297,8 @@ def server():
     FakeBrokoli.task_uploads = []
     FakeBrokoli.task_stored_digests = set()
     FakeBrokoli.events = []
+    FakeBrokoli.seen = []
+    FakeBrokoli.run_ops = []
 
     httpd = HTTPServer(("127.0.0.1", 0), FakeBrokoli)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)

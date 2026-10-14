@@ -197,6 +197,89 @@ class TestDbtOptions:
         assert config["output_model"] == "orders"
 
 
+class TestCoreConfigKeys:
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: source_db("N", query="SELECT 1", conn_id="w", pool="warehouse"),
+            lambda: source_api("N", url="https://x.example", pool="warehouse"),
+            lambda: source_file("N", path="/d/x.csv", pool="warehouse"),
+            lambda: sink_db("N", table="t", conn_id="w", pool="warehouse"),
+            lambda: sink_file("N", path="/d/y.csv", pool="warehouse"),
+            lambda: sink_api("N", url="https://x.example", pool="warehouse"),
+            lambda: migrate("N", source_conn_id="a", target_conn_id="b", table="t", pool="warehouse"),
+            lambda: dbt("N", pool="warehouse"),
+            lambda: code_node("N", script="pass", pool="warehouse"),
+            lambda: bash("N", command="true", pool="warehouse"),
+        ],
+    )
+    def test_pool_on_every_io_node(self, build):
+        with Pipeline("pool") as p:
+            build()
+        assert p.to_json()["nodes"][0]["config"]["pool"] == "warehouse"
+
+    def test_pool_is_omitted_when_unset(self):
+        with Pipeline("pool") as p:
+            source_db("N", query="SELECT 1", conn_id="w")
+        assert "pool" not in p.to_json()["nodes"][0]["config"]
+
+    def test_sink_db_create_table_and_clickhouse_engine(self):
+        with Pipeline("ch") as p:
+            sink_db("Load", table="events", conn_id="ch", create_table=True, table_engine="ReplacingMergeTree")
+        config = p.to_json()["nodes"][0]["config"]
+        assert config["create_table"] is True
+        assert config["table_engine"] == "ReplacingMergeTree"
+
+    def test_source_api_source_type(self):
+        with Pipeline("gql") as p:
+            source_api("Fetch", url="https://x.example/graphql", source_type="graphql")
+        assert p.to_json()["nodes"][0]["config"]["source_type"] == "graphql"
+
+    def test_code_limits_and_node_path(self):
+        with Pipeline("code") as p:
+            code_node(
+                "Run",
+                language="typescript",
+                script="export default () => {}",
+                node_path="/usr/bin/node",
+                max_memory_mb=256,
+                max_cpu_seconds=30,
+            )
+        config = p.to_json()["nodes"][0]["config"]
+        assert (config["node_path"], config["max_memory_mb"], config["max_cpu_seconds"]) == (
+            "/usr/bin/node",
+            256,
+            30,
+        )
+
+    def test_migrate_partition_copies_and_converts_datetimes(self):
+        import datetime
+
+        utc = datetime.timezone.utc
+        spec = {
+            "column": "updated_at",
+            "strategy": "date",
+            "boundaries": [datetime.datetime(2026, 1, 1, tzinfo=utc), "2026-02-01T00:00:00Z"],
+        }
+        with Pipeline("part") as p:
+            migrate(
+                "Copy",
+                source_conn_id="a",
+                target_conn_id="b",
+                query="SELECT * FROM events",
+                table="events",
+                mode="upsert",
+                key_columns=["id", "updated_at"],
+                partition=spec,
+            )
+        spec["boundaries"].append("2026-03-01T00:00:00Z")
+        assert p.to_json()["nodes"][0]["config"]["partition"] == {
+            "column": "updated_at",
+            "strategy": "date",
+            "boundaries": ["2026-01-01T00:00:00+00:00", "2026-02-01T00:00:00Z"],
+        }
+
+
 class TestChaining:
     def test_sequential_rshift(self):
         with Pipeline("test_seq") as p:

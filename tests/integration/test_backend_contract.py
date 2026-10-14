@@ -23,6 +23,7 @@ from brokoli import (
     source_api,
     bash,
     contract_gate,
+    migrate,
     wait,
 )
 from brokoli.testing import BackendProcess
@@ -299,3 +300,86 @@ def test_bash_runs_with_env_and_passes_input_through(client, tmp_path):
     _run(client, pipeline)
     assert marker.read_text() == "hello"
     assert output_path.read_text().splitlines() == ["id", "7"]
+
+
+def test_dry_run_returns_node_results_without_a_run(client, tmp_path):
+    input_path = tmp_path / "input.csv"
+    input_path.write_text("id\n1\n2\n")
+    with Pipeline("SDK dry run", pipeline_id=f"sdk-contract-dry-{os.getpid()}") as pipeline:
+        source = source_file("Read", path=str(input_path), format="csv")
+        transform("Shape", input=source, rules=[{"type": "rename", "mapping": {"id": "key"}}])
+    client.deploy(pipeline)
+    result = client.dry_run(pipeline)
+    assert "error" not in result, result
+    assert result["results"], result
+
+
+def test_resume_reruns_from_the_failed_node_as_a_new_run(client, tmp_path):
+    marker = tmp_path / "fixed"
+    output_path = tmp_path / "out.csv"
+    (tmp_path / "input.csv").write_text("id\n1\n")
+    script = (
+        "import os, sys\n"
+        f"if not os.path.exists({str(marker)!r}):\n"
+        "    sys.exit(1)\n"
+        "output_data = {'columns': ['status'], 'rows': [{'status': 'resumed'}]}\n"
+    )
+    with Pipeline("SDK resume", pipeline_id=f"sdk-contract-resume-{os.getpid()}") as pipeline:
+        source = source_file("Read", path=str(tmp_path / "input.csv"), format="csv")
+        code("Flaky", input=source, script=script) >> sink_file(
+            "Write", path=str(output_path), format="csv"
+        )
+    client.deploy(pipeline)
+    failed = client.run(pipeline.pipeline_id)
+    assert failed.wait(timeout=120)["status"] == "failed"
+
+    marker.touch()
+    resumed = failed.resume()
+    assert resumed.id != failed.id
+    assert resumed.wait(timeout=120, raise_on_failure=True)["status"] == "success"
+    assert "resumed" in output_path.read_text()
+
+
+def test_backfill_plans_one_run_per_interval(client, tmp_path):
+    (tmp_path / "input.csv").write_text("id\n1\n")
+    with Pipeline(
+        "SDK backfill",
+        pipeline_id=f"sdk-contract-backfill-{os.getpid()}",
+        schedule="0 0 * * *",
+    ) as pipeline:
+        # One file per interval: the server refuses a backfill whose runs
+        # would all do the same work.
+        source_file("Read", path=str(tmp_path / "input.csv"), format="csv") >> sink_file(
+            "Write", path=str(tmp_path / "out-${interval.start}.csv"), format="csv"
+        )
+    client.deploy(pipeline)
+    plan = client.backfill(pipeline, "2026-10-01", "2026-10-03")
+    assert plan["intervals"] == 3, plan
+
+
+def test_partitioned_migrate_is_accepted_and_copies_every_range(client, tmp_path):
+    import sqlite3
+
+    source_db_path, target_db_path = tmp_path / "source.db", tmp_path / "target.db"
+    with sqlite3.connect(source_db_path) as conn:
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, v TEXT)")
+        conn.executemany("INSERT INTO events VALUES (?, ?)", [(i, f"v{i}") for i in range(1, 31)])
+    with sqlite3.connect(target_db_path) as conn:
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, v TEXT)")
+
+    with Pipeline("SDK partitioned migrate", pipeline_id=f"sdk-contract-part-{os.getpid()}") as pipeline:
+        migrate(
+            "Copy",
+            source_uri=f"sqlite://{source_db_path}",
+            target_uri=f"sqlite://{target_db_path}",
+            query="SELECT id, v FROM events",
+            table="events",
+            mode="upsert",
+            key_columns=["id"],
+            # One range at a time: SQLite takes one writer, and parallel
+            # ranges into it can fail with SQLITE_BUSY.
+            partition={"column": "id", "strategy": "numeric", "boundaries": [0, 11, 21, 31], "max_parallel": 1},
+        )
+    _run(client, pipeline)
+    with sqlite3.connect(target_db_path) as conn:
+        assert conn.execute("SELECT COUNT(*), MIN(id), MAX(id) FROM events").fetchone() == (30, 1, 30)

@@ -77,8 +77,6 @@ with Pipeline(
 
 ### Nodes
 
-14 built-in node types:
-
 ```python
 # Sources
 source_db("Name", query="SELECT ...", conn_id="pg", retries=3)
@@ -87,14 +85,98 @@ source_file("Name", path="/data/input.csv", format="csv")
 
 # Processing
 transform("Name", input, rules=["drop_null(id)", "deduplicate(email)"])
+project("Name", input, {"total": add(column("amount"), column("tax"))})
+filter_rows("Name", input, eq(column("status"), literal("ready")))
+aggregate("Name", input, group_by=["status"], aggregations=[{"column": "total", "function": "sum", "alias": "revenue"}])
 join("Name", left, right, on="id=customer_id", how="left")
 quality_check("Name", input, rules=["not_null(id)", "unique(id)", "min(amount, 0)"])
+contract_gate("Name", input, contract=orders_contract)
+code("Name", input, script="...")
+bash("Name", input, command='./refresh.sh "$DAY"', env={"DAY": "${param.day}"})
 
 # Outputs
 sink_db("Name", input, table="output", mode="append", conn_id="pg")
 sink_file("Name", input, path="/tmp/out.csv", format="csv")
 sink_api("Name", input, url="https://hooks.slack.com/...", method="POST")
+
+# Integrations and flow control
+migrate("Name", source_conn_id="oltp", target_conn_id="dwh", query="...", table="t")
+dbt("Name", command="build", select="marts", conn_id="dwh")
+notify("Name", input, notify_type="slack", webhook_url="https://hooks.slack.com/...")
+wait("Name", condition="file_exists", path="/data/landing/*.csv")
+condition_node("Name", expression="row_count > 0")
 ```
+
+#### Waiting without holding a slot
+
+`wait()` parks the run until its condition holds. While parked, the run
+frees its concurrency slot; the server re-checks every `poll_interval`
+(default 30s) and fails the node once `timeout` (default 6h) passes. Any
+input flows through unchanged.
+
+```python
+ready = wait("Export landed", condition="file_exists",
+             path="/data/exports/{{ ds }}/*.csv", poll_interval="5m", timeout="4h")
+ready >> source_file("Read export", path="/data/exports/{{ ds }}/orders.csv")
+
+wait("API ready", condition="http", url="https://api.example.com/health", expect_status=200)
+wait("Slice closed", condition="interval_elapsed", offset="15m")
+wait("Upstream done", condition="pipeline", pipeline_id="nightly-load")
+```
+
+Durations take a Go duration string (`"90s"`, `"2h30m"`), a number of
+seconds, or a `datetime.timedelta`.
+
+#### Data contracts
+
+`contract_gate()` enforces an [actually-fine](https://github.com/Tnsor-Labs/actually-fine)
+contract: cleared records flow on, quarantined records are dropped, and a
+breach of a `reject` or `halt` rule fails the node after its evidence is
+recorded. Pass the contract IR as a dict, or an `actually_fine.Contract`:
+
+```python
+from actually_fine import Contract, Predicate, Rule
+
+orders_contract = Contract("orders", "1", [
+    Rule("email-valid", "$.email", Predicate("format", format="email"), "quarantine"),
+])
+clean = contract_gate("Orders contract", input=orders, contract=orders_contract)
+```
+
+#### Shell commands
+
+`bash()` runs a trusted command as the worker's OS user; it is not a
+sandbox. Platform references such as `${param.day}` are refused inside
+`command`, because a substituted value would run as shell code: put them in
+`env` and quote the variable in the command, as above. The server can turn
+bash nodes off (`BROKOLI_DISABLED_NODE_TYPES`), and `deploy` then refuses the
+pipeline before saving it.
+
+#### Connection pools and resource limits
+
+Every node that reads or writes data takes `pool=`: nodes in the same pool
+share that pool's concurrency limit on the server. Without it a node joins
+the pool of its `conn_id`. `code()` and `bash()` take `max_memory_mb` and
+`max_cpu_seconds` to cap the process.
+
+#### Partitioned migrations
+
+`migrate(partition=...)` splits a copy into ranges of one column that run
+in parallel and retry independently:
+
+```python
+migrate("Copy events", source_conn_id="oltp", target_conn_id="dwh",
+        query="SELECT * FROM events", table="events",
+        mode="upsert", key_columns=["id"],
+        partition={"column": "id", "strategy": "numeric",
+                   "boundaries": [0, 1_000_000, 2_000_000, 3_000_000],
+                   "max_parallel": 4})
+```
+
+A partitioned copy must be an upsert whose `key_columns` include the
+partition column, into a table that already exists, so a retried range
+cannot duplicate rows. `strategy="date"` takes RFC3339 boundaries or
+timezone-aware `datetime`s.
 
 Every node-producing API accepts `node_key=` for explicit logical identity:
 
@@ -421,6 +503,54 @@ brokoli deploy pipeline.py --api-key eyJhbG...
 export BROKOLI_TOKEN=eyJhbG...
 brokoli deploy pipeline.py
 ```
+
+### Workspaces
+
+On a server with more than one workspace, every command and client call
+can target one. Without it, the server uses your default workspace.
+
+```bash
+brokoli deploy pipeline.py --workspace analytics
+export BROKOLI_WORKSPACE=analytics      # or set it for every command
+```
+
+A named environment in `brokoli.yaml` can carry one too:
+
+```yaml
+environments:
+  prod: { server: https://brokoli.example, token_env: BROKOLI_PROD_TOKEN, workspace: analytics }
+```
+
+`--workspace` wins over `BROKOLI_WORKSPACE`, which wins over the
+environment's `workspace`. It is sent as `X-Workspace-ID`; a single-tenant
+server ignores it.
+
+## Programmatic client
+
+`Client` does from Python what the CLI does from a shell:
+
+```python
+from brokoli import Client
+
+client = Client.from_env("https://brokoli.example")   # BROKOLI_TOKEN, BROKOLI_WORKSPACE
+client.deploy(pipeline)
+
+run = client.run("orders", params={"day": "2026-10-14"})
+detail = run.wait(timeout=600)                         # raises RunFailed with raise_on_failure=True
+
+if detail["status"] == "failed":
+    retry = run.resume()                               # a new run, from the first failed node
+    retry = run.resume(from_node="load")               # or from a chosen node onward
+
+client.dry_run("orders")                               # up to 10 rows per node, no run recorded
+client.backfill("orders", "2026-10-01", "2026-10-07")  # one run per scheduled interval
+```
+
+A `dry_run` really executes the nodes against their connections, so a sink
+still writes. `backfill` takes bare dates as whole days (end inclusive) or
+timezone-aware `datetime`s / RFC3339 strings as exact instants; the server
+refuses a backfill whose pipeline never references the interval, since
+every run would do the same work, unless you pass `force=True`.
 
 ## Template Variables
 
