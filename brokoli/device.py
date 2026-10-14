@@ -66,6 +66,12 @@ def request_device_authorization(server: str) -> dict[str, Any]:
     return payload
 
 
+# Answers that mean "not now" rather than "no": too many requests, and a
+# gateway or server that is briefly unavailable.
+_POLL_BACK_OFF = frozenset({429, 502, 503, 504})
+_POLL_MAX_WAIT = 60
+
+
 def poll_for_token(
     server: str,
     device_code: str,
@@ -77,17 +83,25 @@ def poll_for_token(
 
     Honors the protocol's pacing answers: ``authorization_pending`` keeps
     polling, ``slow_down`` widens the interval, ``access_denied`` and
-    ``expired`` are terminal.
+    ``expired`` are terminal. HTTP 429 and a briefly unavailable server
+    back off and keep polling until the code expires.
     """
     deadline = time.monotonic() + max(1, expires_in)
     wait = max(1, interval)
     while True:
-        if time.monotonic() > deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise DeviceAuthError("the code expired before it was approved; run brokoli auth again")
-        time.sleep(wait)
+        time.sleep(min(wait, remaining))
         status, payload = _post_json(
             server, "/api/auth/oauth/device/poll", {"device_code": device_code}
         )
+        if status in _POLL_BACK_OFF:
+            # Rate limited, or the server briefly unavailable: the code is
+            # still good until it expires, so poll more slowly rather than
+            # abandoning a login the user may be approving right now.
+            wait = min(wait * 2, _POLL_MAX_WAIT)
+            continue
         if status != 200:
             raise DeviceAuthError(f"polling failed (HTTP {status}): {payload}")
         answer = str(payload.get("status", ""))

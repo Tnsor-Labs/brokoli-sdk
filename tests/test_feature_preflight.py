@@ -355,3 +355,55 @@ class TestFeatureGating:
             "edges": [],
         }
         assert required_execution_features(payload) == {"dataset-map"}
+
+
+_CAPS = {
+    "supported_ir_versions": ["2.0", "2.1", "2.2"],
+    "supported_execution_features": [],
+    "node_type_capabilities": {"source_file": ["source"], "bash": ["compute"], "wait": ["compute"]},
+    "disabled_node_types": None,
+}
+
+
+class TestNodeTypePreflight:
+    """The server lists the node types it knows and the ones its operator
+    turned off; deploy refuses either before anything is saved."""
+
+    def test_known_and_enabled_types_pass(self, monkeypatch):
+        _serve_capabilities(monkeypatch, _CAPS)
+        preflight_server_compatibility([_StaticPayloadPipeline("ok", {"command": "true"}, node_type="bash")], "http://x")
+
+    def test_disabled_type_is_refused(self, monkeypatch):
+        _serve_capabilities(monkeypatch, {**_CAPS, "disabled_node_types": ["bash"]})
+        with pytest.raises(CompatibilityError, match="bash nodes are disabled on this server"):
+            preflight_server_compatibility(
+                [_StaticPayloadPipeline("off", {"command": "true"}, node_type="bash")], "http://x"
+            )
+
+    def test_type_the_server_predates_is_refused(self, monkeypatch):
+        _serve_capabilities(monkeypatch, _CAPS)
+        with pytest.raises(CompatibilityError, match="does not know the contract_gate node type"):
+            preflight_server_compatibility(
+                [_StaticPayloadPipeline("new", {"contract": {}}, node_type="contract_gate")], "http://x"
+            )
+
+    def test_servers_without_the_table_are_not_checked(self, monkeypatch):
+        old = {k: v for k, v in _CAPS.items() if k not in ("node_type_capabilities", "disabled_node_types")}
+        _serve_capabilities(monkeypatch, old)
+        preflight_server_compatibility(
+            [_StaticPayloadPipeline("new", {"contract": {}}, node_type="contract_gate")], "http://x"
+        )
+
+    def test_legacy_flag_cannot_override(self, monkeypatch):
+        _serve_capabilities(monkeypatch, {**_CAPS, "disabled_node_types": ["wait"]})
+        with pytest.raises(CompatibilityError, match="cannot override"):
+            preflight_server_compatibility(
+                [_StaticPayloadPipeline("w", {"condition": "http", "url": "https://x"}, node_type="wait")],
+                "http://x",
+                allow_legacy_server=True,
+            )
+
+    def test_malformed_disabled_list_fails_closed(self, monkeypatch):
+        _serve_capabilities(monkeypatch, {**_CAPS, "disabled_node_types": "bash"})
+        with pytest.raises(CompatibilityError, match="disabled_node_types"):
+            preflight_server_compatibility([_StaticPayloadPipeline("x", {}, node_type="bash")], "http://x")
