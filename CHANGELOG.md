@@ -7,6 +7,14 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.10.0 - 2026-10-15
+
+Catches the SDK up with core v0.12 to v0.18. Each feature that needs a
+newer server names the version below; the SDK checks the node types a
+server offers before deploying, so an unsupported node fails at deploy
+with its name rather than at run time. The vendored schemas and the
+backend contract tests now track core v0.18.12.
+
 ### Fixed
 
 - **`dbt(vars=...)` given a dict was silently dropped.** The server reads
@@ -19,6 +27,28 @@ those are called out explicitly.
 
 ### Added
 
+- **Dataset schemas** (core v0.12.0): `dataset_schema(...)` builds a
+  portable `brokoli.dataset-schema/v1` descriptor (ordered columns,
+  scalar and decimal types with precision and scale, nullability, enum,
+  array, map and record types, `additional_columns` open or closed).
+  Sources take `schema=`; declared schemas propagate through joins,
+  `project` and `aggregate`, and the server enforces them at run time, so
+  a source that stops returning a column fails instead of producing a
+  narrower dataset.
+- **Join collision policy**: `join(..., collision_policy="prefix" |
+  "error" | "alias", right_alias=...)` states what happens when both sides
+  carry the same column name (`prefix` is what the engine always did).
+- **Native relational operators**: `project()`, `filter_rows()` and
+  `aggregate()`, with the expression builders (`column`, `literal`,
+  `add`, `subtract`, `multiply`, `divide`, `concat`, `coalesce`, `eq`,
+  `neq`, `lt`, `lte`, `gt`, `gte`, `is_null`, `logical_not`, `all_of`,
+  `any_of`, `case_when`). Output types are inferred from declared input
+  types. Needs core v0.12.0.
+- **API execution profiles**: `source_api(execution_profile=...)` with
+  `public_api_safe()`, `high_throughput()` and `strict()`, which expand to
+  the full explicit policy core requires.
+- **S3 connections on file nodes**: `source_file`/`sink_file` take
+  `conn_id=` naming an S3 connection (core v0.12.0).
 - **`wait()`**: park a run until a condition holds (`file_exists`,
   `http`, `interval_elapsed`, `pipeline`) without holding a concurrency
   slot. Durations take a Go duration string, seconds, or a `timedelta`.
