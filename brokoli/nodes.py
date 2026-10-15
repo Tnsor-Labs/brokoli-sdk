@@ -186,6 +186,7 @@ def source_db(
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
     schema: Any = UNSET,
+    pool: Any = UNSET,
 ) -> DatasetRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
@@ -205,6 +206,7 @@ def source_db(
         "schema": schema,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["pool"] = pool
 
     config = _build_config({"query": query}, optional)
     return _register_node("source_db", name, config, ref_cls=DatasetRef, node_key=node_key)
@@ -230,6 +232,8 @@ def source_api(
     schema: Any = UNSET,
     execution_profile: Any = UNSET,
     profile: Any = UNSET,
+    source_type: Any = UNSET,
+    pool: Any = UNSET,
 ) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -329,6 +333,8 @@ def source_api(
                 optional[key] = profile_config.pop(key)
         optional["execution"] = profile_config
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["source_type"] = source_type
+    optional["pool"] = pool
 
     if pagination is not UNSET and pagination is not None:
         if isinstance(pagination, PaginationStrategy):
@@ -368,6 +374,7 @@ def source_file(
     node_key: Optional[str] = None,
     schema: Any = UNSET,
     conn_id: Any = UNSET,
+    pool: Any = UNSET,
 ) -> DatasetRef:
     """File source -- read CSV, JSON, Excel, or XML.
 
@@ -378,6 +385,7 @@ def source_file(
     """
     optional: dict = {"schema": schema, "conn_id": conn_id}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["pool"] = pool
     config = _build_config({"path": path, "format": format}, optional)
     return _register_node("source_file", name, config, ref_cls=DatasetRef, node_key=node_key)
 
@@ -811,6 +819,10 @@ def code(
     retry_delay: Any = UNSET,
     node_key: Optional[str] = None,
     output_schema: Any = UNSET,
+    node_path: Any = UNSET,
+    max_memory_mb: Any = UNSET,
+    max_cpu_seconds: Any = UNSET,
+    pool: Any = UNSET,
 ) -> NodeRef:
     """Custom code node -- run Python (or other) scripts.
 
@@ -827,10 +839,20 @@ def code(
 
     ``timeout`` (seconds) overrides the engine's 30-second default for the
     script's execution. (brokoli-sdk#48 -- previously not exposed here at
-    all, even though every source/sink node had it.)
+    all, even though every source/sink node had it.) ``max_memory_mb`` and
+    ``max_cpu_seconds`` cap the script process; ``node_path`` picks the
+    Node executable for ``language="typescript"``.
+
+    A run parameter cannot be written into ``script`` as ``${param.x}``:
+    the server refuses it, because whoever starts a run would choose the
+    code. Read ``params["x"]`` inside the script instead.
     """
     optional: dict = {"python_path": python_path, "output_schema": output_schema}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["node_path"] = node_path
+    optional["max_memory_mb"] = max_memory_mb
+    optional["max_cpu_seconds"] = max_cpu_seconds
+    optional["pool"] = pool
     config = _build_config({"language": language, "script": script}, optional)
     return _register_node("code", name, config, *_input_args(input), node_key=node_key)
 
@@ -848,6 +870,7 @@ def bash(
     max_memory_mb: Any = UNSET,
     max_cpu_seconds: Any = UNSET,
     node_key: Optional[str] = None,
+    pool: Any = UNSET,
 ) -> NodeRef:
     """Run a trusted Bash command and pass the input dataset through unchanged.
 
@@ -863,6 +886,7 @@ def bash(
         "max_cpu_seconds": max_cpu_seconds,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["pool"] = pool
     config = _build_config({"command": command}, optional)
     return _register_node("bash", name, config, *_input_args(input), node_key=node_key)
 
@@ -886,6 +910,9 @@ def sink_db(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    create_table: Any = UNSET,
+    table_engine: Any = UNSET,
+    pool: Any = UNSET,
 ) -> NodeRef:
     """Database sink -- write a dataset to a table.
 
@@ -906,6 +933,10 @@ def sink_db(
 
         DELETE     7013ms   500,000 dead rows   137 MB
         TRUNCATE   2591ms           0 dead rows  13 MB
+
+    ``create_table=True`` creates the table from the input's columns when
+    it does not exist. ``table_engine`` sets the engine of a table created
+    on ClickHouse (``"MergeTree"`` when unset).
 
     It is off by default because it is not free: TRUNCATE takes a lock
     that blocks anything *reading* the table for the whole load, where
@@ -930,6 +961,9 @@ def sink_db(
         "truncate": truncate,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["create_table"] = create_table
+    optional["table_engine"] = table_engine
+    optional["pool"] = pool
 
     config = _build_config({"table": table, "mode": mode}, optional)
     return _register_node("sink_db", name, config, *_input_args(input), node_key=node_key)
@@ -947,6 +981,7 @@ def sink_file(
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
     conn_id: Any = UNSET,
+    pool: Any = UNSET,
 ) -> NodeRef:
     """File sink -- write data to CSV, JSON, Parquet, etc.
 
@@ -959,6 +994,7 @@ def sink_file(
     """
     optional: dict = {"compress": compress, "conn_id": conn_id}
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["pool"] = pool
     config = _build_config({"path": path, "format": format}, optional)
     return _register_node("sink_file", name, config, *_input_args(input), node_key=node_key)
 
@@ -979,6 +1015,7 @@ def sink_api(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    pool: Any = UNSET,
 ) -> NodeRef:
     """API sink -- send data to an HTTP endpoint.
 
@@ -1014,6 +1051,7 @@ def sink_api(
         "auth_password": auth_password,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["pool"] = pool
     config = _build_config({"url": url, "method": method}, optional)
     return _register_node("sink_api", name, config, *_input_args(input), node_key=node_key)
 
@@ -1021,6 +1059,20 @@ def sink_api(
 # ===================================================================
 # Flow control
 # ===================================================================
+
+
+def _migrate_partition(partition: Any) -> Any:
+    """A copy of a migrate partition spec, with datetime boundaries as the
+    RFC3339 strings the server compares."""
+    if not isinstance(partition, Mapping):
+        return partition
+    spec = dict(partition)
+    boundaries = spec.get("boundaries")
+    if isinstance(boundaries, (list, tuple)):
+        spec["boundaries"] = [
+            b.isoformat() if isinstance(b, datetime.datetime) else b for b in boundaries
+        ]
+    return spec
 
 
 def migrate(
@@ -1041,6 +1093,8 @@ def migrate(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    partition: Any = UNSET,
+    pool: Any = UNSET,
 ) -> DatasetRef:
     """Database migration -- copy rows from one database to another.
 
@@ -1058,6 +1112,19 @@ def migrate(
     row count (default 5000), and ``create_table`` creates the target table
     if it doesn't exist. (brokoli-sdk#48 -- previously none of the three had
     an SDK parameter; only settable by hand-editing the compiled YAML.)
+
+    ``partition`` splits the copy into ranges of one column that run in
+    parallel and retry independently::
+
+        partition={"column": "id", "strategy": "numeric",
+                   "boundaries": [0, 1_000_000, 2_000_000], "max_parallel": 4}
+
+    ``strategy`` is ``"numeric"`` or ``"date"`` (boundaries as RFC3339
+    strings or timezone-aware ``datetime``), the boundaries strictly
+    increase, and ``max_parallel`` is 1 to 64 (default 4). A partitioned
+    copy must be an upsert whose ``key_columns`` include the partition
+    column, into an existing table (``create_table`` off), so a retried
+    range cannot duplicate rows.
 
     Example::
 
@@ -1079,6 +1146,8 @@ def migrate(
         "create_table": create_table,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["partition"] = _migrate_partition(partition)
+    optional["pool"] = pool
 
     config = _build_config(
         {
@@ -1119,6 +1188,7 @@ def dbt(
     conn_id: Any = UNSET,
     target_schema: Any = UNSET,
     output_model: Any = UNSET,
+    pool: Any = UNSET,
 ) -> DatasetRef:
     """Run dbt commands -- run, test, build, seed, snapshot.
 
@@ -1151,6 +1221,7 @@ def dbt(
         "output_model": output_model,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    optional["pool"] = pool
     config = _build_config({"command": command}, optional)
     return _register_node(
         "dbt",

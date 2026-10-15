@@ -87,8 +87,11 @@ def _resolve_target(
     configured server is used; otherwise ``default_server`` (the hosted
     platform, unless overridden). Auth likewise prefers an explicit token
     (BROKOLI_TOKEN / --api-key) and falls back to the environment's
-    ``token_env``.
+    ``token_env``. The workspace is ``--workspace``, else
+    ``BROKOLI_WORKSPACE``, else the environment's ``workspace``; it is
+    sent as ``X-Workspace-ID`` on every request the command makes.
     """
+    global _cli_workspace
     server = getattr(args, "server", None)
     env_cfg: dict = {}
     env_name = getattr(args, "env", None)
@@ -116,7 +119,19 @@ def _resolve_target(
         stored = device.load_token(server)
         if stored:
             auth = f"Bearer {stored}"
+    workspace = str(getattr(args, "workspace", None) or os.getenv("BROKOLI_WORKSPACE") or "")
+    env_workspace = env_cfg.get("workspace")
+    if not workspace and isinstance(env_workspace, str):
+        workspace = env_workspace
+    _cli_workspace = workspace
     return server.rstrip("/"), auth
+
+
+# The workspace the current command targets, set by _resolve_target. One
+# command runs per process, and every request a command makes goes to the
+# same workspace, so it travels here rather than through every helper that
+# already takes the server and auth header.
+_cli_workspace = ""
 
 
 def _make_headers(auth_header: str, content_type: str | None = None) -> dict[str, str]:
@@ -124,6 +139,8 @@ def _make_headers(auth_header: str, content_type: str | None = None) -> dict[str
     headers: dict[str, str] = {}
     if auth_header:
         headers["Authorization"] = auth_header
+    if _cli_workspace:
+        headers["X-Workspace-ID"] = _cli_workspace
     if content_type:
         headers["Content-Type"] = content_type
     return headers
@@ -320,7 +337,9 @@ def deploy(args: argparse.Namespace) -> None:
 
         if not skip_validation:
             print(f"  Validating {pipeline.name}...")
-            vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
+            vr = validate_pipeline(
+                pipeline, server_url=server, auth_header=auth_header, workspace=_cli_workspace
+            )
             vr.print_report()
             if not vr.valid:
                 raise ValidationError(
@@ -361,7 +380,9 @@ def validate_cmd(args: argparse.Namespace) -> None:
     total_errors = 0
     for pipeline in pipelines:
         print(f"Validating: {pipeline.name}")
-        vr = validate_pipeline(pipeline, server_url=server, auth_header=auth_header)
+        vr = validate_pipeline(
+            pipeline, server_url=server, auth_header=auth_header, workspace=_cli_workspace
+        )
         vr.print_report()
         total_errors += len(vr.errors)
         print()
@@ -990,6 +1011,11 @@ def main() -> None:
     dp = sub.add_parser("deploy", help="Deploy pipeline(s) to a Brokoli server")
     dp.add_argument("file", help="Python file or directory containing pipelines")
     dp.add_argument("--server", default=None, help="Brokoli server URL")
+    dp.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     dp.add_argument("--api-key", default="", help="API key for authentication")
     dp.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1006,6 +1032,11 @@ def main() -> None:
     vp = sub.add_parser("validate", help="Validate pipeline(s) without deploying")
     vp.add_argument("file", help="Python file or directory")
     vp.add_argument("--server", default=None, help="Brokoli server URL (for conn_id checks)")
+    vp.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     vp.add_argument("--api-key", default="", help="API key")
     vp.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1049,6 +1080,11 @@ def main() -> None:
     df = sub.add_parser("diff", help="Compare local IR with server pipeline definitions")
     df.add_argument("file", help="Python file or directory containing pipelines")
     df.add_argument("--server", default=None, help="Brokoli server URL")
+    df.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     df.add_argument("--api-key", default="", help="API key for authentication")
     df.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1059,6 +1095,11 @@ def main() -> None:
     rp = sub.add_parser("run", help="Trigger a run of a deployed pipeline")
     rp.add_argument("pipeline", help="Pipeline id to run")
     rp.add_argument("--server", default=None, help="Brokoli server URL")
+    rp.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     rp.add_argument("--api-key", default="", help="API key for authentication")
     rp.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1075,6 +1116,11 @@ def main() -> None:
     sp = sub.add_parser("status", help="Show the status of a run")
     sp.add_argument("run", help="Run id")
     sp.add_argument("--server", default=None, help="Brokoli server URL")
+    sp.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     sp.add_argument("--api-key", default="", help="API key for authentication")
     sp.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1085,6 +1131,11 @@ def main() -> None:
     lp = sub.add_parser("logs", help="Print a run's logs")
     lp.add_argument("run", help="Run id")
     lp.add_argument("--server", default=None, help="Brokoli server URL")
+    lp.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     lp.add_argument("--api-key", default="", help="API key for authentication")
     lp.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1101,6 +1152,11 @@ def main() -> None:
     cn = sub.add_parser("cancel", help="Cancel an in-progress run")
     cn.add_argument("run", help="Run id")
     cn.add_argument("--server", default=None, help="Brokoli server URL")
+    cn.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     cn.add_argument("--api-key", default="", help="API key for authentication")
     cn.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1111,6 +1167,11 @@ def main() -> None:
     rt = sub.add_parser("retry", help="Retry a run, resuming from where it stopped")
     rt.add_argument("run", help="Run id")
     rt.add_argument("--server", default=None, help="Brokoli server URL")
+    rt.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     rt.add_argument("--api-key", default="", help="API key for authentication")
     rt.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"
@@ -1123,6 +1184,11 @@ def main() -> None:
     bf.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="Start date")
     bf.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="End date")
     bf.add_argument("--server", default=None, help="Brokoli server URL")
+    bf.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace id to act in (X-Workspace-ID); default: your default workspace",
+    )
     bf.add_argument("--api-key", default="", help="API key for authentication")
     bf.add_argument(
         "--env", default=None, help="Named environment from brokoli.yaml (server + token_env)"

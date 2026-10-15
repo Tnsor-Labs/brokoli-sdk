@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import urllib.error
@@ -210,9 +211,26 @@ def _is_bundle_digest(value: str) -> bool:
     return len(value) == 71 and all(c in "0123456789abcdef" for c in value[7:])
 
 
+_PARAM_REFERENCE = re.compile(r"\$\{param\.[^}]*\}")
+
+
 def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     script = config.get("script")
     task_bundle = config.get("task_bundle")
+    if isinstance(script, str) and (reference := _PARAM_REFERENCE.search(script)) is not None:
+        # Mirrors the server's codeScriptParamError (core v0.15.0).
+        result.add_error(
+            name,
+            "script",
+            f"Code script contains {reference.group(0)}, which the server does not substitute "
+            "in code: whoever starts the run would choose the code. Read params[...] instead",
+        )
+    for key in ("max_memory_mb", "max_cpu_seconds"):
+        value = config.get(key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+        ):
+            result.add_error(name, key, f"Code '{key}' must be a positive number")
     if not script and not task_bundle:
         result.add_error(name, "script", "Code node requires a 'script' or a 'task_bundle'")
     if script and task_bundle:
@@ -528,6 +546,84 @@ def _validate_migrate(name: str, config: dict[str, Any], result: ValidationResul
             "Migrate mode='upsert' requires 'key_columns' -- the column(s) a "
             "row collides on, e.g. key_columns=['id']",
         )
+    if "partition" in config:
+        _validate_migrate_partition(name, config, result)
+
+
+_PARTITION_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _partition_boundary_error(strategy: str, value: Any) -> str:
+    if strategy == "numeric":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+            return "must be a finite number"
+        if value in (float("inf"), float("-inf")):
+            return "must be a finite number"
+        return ""
+    if not isinstance(value, str):
+        return "must be an RFC3339 timestamp string"
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return "must be an RFC3339 timestamp string"
+    if parsed.tzinfo is None or "T" not in value:
+        return "must be an RFC3339 timestamp string"
+    return ""
+
+
+def _validate_migrate_partition(
+    name: str, config: dict[str, Any], result: ValidationResult
+) -> None:
+    # Mirrors the server's parseMigratePartitionConfig and the partitioned
+    # migrate rules in engine/validate.go (core v0.17.0).
+    partition = config["partition"]
+    if not isinstance(partition, dict):
+        result.add_error(name, "partition", "Migrate partition must be an object")
+        return
+    column = partition.get("column")
+    if not isinstance(column, str) or _PARTITION_COLUMN.fullmatch(column) is None:
+        result.add_error(name, "partition", "partition.column must be a simple SQL identifier")
+        return
+    strategy = str(partition.get("strategy") or "").strip().lower()
+    if strategy not in ("numeric", "date"):
+        result.add_error(name, "partition", "partition.strategy must be numeric or date")
+        return
+    boundaries = partition.get("boundaries")
+    if not isinstance(boundaries, list) or len(boundaries) < 2:
+        result.add_error(name, "partition", "partition.boundaries must contain at least two values")
+        return
+    for i, boundary in enumerate(boundaries):
+        problem = _partition_boundary_error(strategy, boundary)
+        if problem:
+            result.add_error(name, "partition", f"partition.boundaries[{i}] {problem}")
+            return
+    keys = (
+        [datetime.datetime.fromisoformat(b.replace("Z", "+00:00")) for b in boundaries]
+        if strategy == "date"
+        else boundaries
+    )
+    if any(a >= b for a, b in zip(keys, keys[1:])):
+        result.add_error(name, "partition", "partition.boundaries must be strictly increasing")
+    if "max_parallel" in partition:
+        value = partition["max_parallel"]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value != int(value)
+            or not 1 <= value <= 64
+        ):
+            result.add_error(name, "partition", "partition.max_parallel must be between 1 and 64")
+    if str(config.get("mode", "")).lower() != "upsert":
+        result.add_error(name, "mode", "Partitioned migrate requires mode='upsert'")
+    key_columns = config.get("key_columns") or []
+    if not key_columns:
+        result.add_error(name, "key_columns", "Partitioned migrate requires key_columns")
+    elif column.lower() not in {str(k).lower() for k in key_columns}:
+        result.add_error(
+            name, "key_columns", f"partition.column {column!r} must be included in key_columns"
+        )
+    if config.get("create_table") is True:
+        result.add_error(name, "create_table", "Partitioned migrate requires create_table=False")
 
 
 # Dispatch table: node type -> validator
@@ -562,6 +658,7 @@ def validate_pipeline(
     pipeline: Any,
     server_url: str = "",
     auth_header: str = "",
+    workspace: str = "",
 ) -> ValidationResult:
     """Validate a pipeline definition before deploy.
 
@@ -710,7 +807,7 @@ def validate_pipeline(
 
     # Server-side validation (conn_id existence)
     if server_url:
-        _validate_connections(data, server_url, auth_header, result)
+        _validate_connections(data, server_url, auth_header, result, workspace)
 
     return result
 
@@ -720,6 +817,7 @@ def _validate_connections(
     server_url: str,
     auth_header: str,
     result: ValidationResult,
+    workspace: str = "",
 ) -> None:
     """Check that all conn_id references exist on the server."""
     conn_ids_used: dict[str, str] = {}
@@ -735,6 +833,8 @@ def _validate_connections(
     headers: dict[str, str] = {}
     if auth_header:
         headers["Authorization"] = auth_header
+    if workspace:
+        headers["X-Workspace-ID"] = workspace
 
     try:
         req = urllib.request.Request(f"{server_url}/api/connections", headers=headers)

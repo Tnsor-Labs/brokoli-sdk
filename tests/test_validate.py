@@ -5,7 +5,8 @@ from brokoli import Pipeline, task, condition
 from brokoli import source_db, source_api, source_file
 from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
-from brokoli import bash, contract_gate, wait
+from brokoli import bash, contract_gate, migrate, wait
+from brokoli import code as code_node
 from brokoli.validation import validate_pipeline
 
 
@@ -225,6 +226,85 @@ class TestValidateContractGateNode:
         result = validate_pipeline(p)
         assert not result.valid
         assert any(issue.field == "contract" for issue in result.errors)
+
+
+class TestValidateCodeAgainstServerRules:
+    def test_param_reference_in_script_is_refused(self):
+        with Pipeline("test") as p:
+            code_node("Run", script='threshold = "${param.threshold}"')
+        result = validate_pipeline(p)
+        assert any(i.field == "script" and "${param.threshold}" in i.message for i in result.errors)
+
+    def test_params_lookup_is_fine(self):
+        with Pipeline("test") as p:
+            code_node("Run", script='threshold = params["threshold"]')
+        assert validate_pipeline(p).valid
+
+    @pytest.mark.parametrize("key", ["max_memory_mb", "max_cpu_seconds"])
+    @pytest.mark.parametrize("value", [0, -1, "256", True])
+    def test_limits_must_be_positive_numbers(self, key, value):
+        with Pipeline("test") as p:
+            code_node("Run", script="pass", **{key: value})
+        assert any(i.field == key for i in validate_pipeline(p).errors)
+
+
+_PARTITIONED = dict(
+    source_conn_id="a",
+    target_conn_id="b",
+    query="SELECT * FROM t",
+    table="t",
+    mode="upsert",
+    key_columns=["id"],
+)
+
+
+class TestValidateMigratePartition:
+    @pytest.mark.parametrize(
+        "partition",
+        [
+            {"column": "id", "strategy": "numeric", "boundaries": [0, 100, 200]},
+            {"column": "id", "strategy": "NUMERIC", "boundaries": [0.5, 1], "max_parallel": 64},
+        ],
+    )
+    def test_valid(self, partition):
+        with Pipeline("test") as p:
+            migrate("Copy", partition=partition, **_PARTITIONED)
+        assert validate_pipeline(p).valid, validate_pipeline(p).errors
+
+    def test_valid_date_strategy(self):
+        with Pipeline("test") as p:
+            migrate(
+                "Copy",
+                partition={
+                    "column": "day",
+                    "strategy": "date",
+                    "boundaries": ["2026-01-01T00:00:00Z", "2026-02-01T00:00:00+01:00"],
+                },
+                **{**_PARTITIONED, "key_columns": ["id", "day"]},
+            )
+        assert validate_pipeline(p).valid, validate_pipeline(p).errors
+
+    @pytest.mark.parametrize(
+        ("partition", "overrides", "field"),
+        [
+            ("id", {}, "partition"),
+            ({"column": "id; drop", "strategy": "numeric", "boundaries": [0, 1]}, {}, "partition"),
+            ({"column": "id", "strategy": "hash", "boundaries": [0, 1]}, {}, "partition"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [0]}, {}, "partition"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [5, 1]}, {}, "partition"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [0, "1"]}, {}, "partition"),
+            ({"column": "d", "strategy": "date", "boundaries": ["2026-01-01", "2026-02-01"]}, {"key_columns": ["d"]}, "partition"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [0, 1], "max_parallel": 65}, {}, "partition"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [0, 1]}, {"mode": "append", "key_columns": ["id"]}, "mode"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [0, 1]}, {"key_columns": ["other"]}, "key_columns"),
+            ({"column": "id", "strategy": "numeric", "boundaries": [0, 1]}, {"create_table": True}, "create_table"),
+        ],
+    )
+    def test_rejects_what_the_server_refuses(self, partition, overrides, field):
+        with Pipeline("test") as p:
+            migrate("Copy", partition=partition, **{**_PARTITIONED, **overrides})
+        result = validate_pipeline(p)
+        assert any(i.field == field for i in result.errors), result.errors
 
 
 class TestValidateCondition:

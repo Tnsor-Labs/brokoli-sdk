@@ -32,6 +32,7 @@ Design notes, in the order they bit people:
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import threading
@@ -125,6 +126,10 @@ def _extract_run_id(payload: Any) -> str:
 class Client:
     """A connection to one Brokoli server.
 
+    ``workspace`` sends ``X-Workspace-ID`` on every request, for a
+    multi-workspace server; without it the server uses your default
+    workspace. ``from_env`` reads it from ``BROKOLI_WORKSPACE``.
+
     Exactly one of the auth styles applies:
 
     - ``api_key``: sent as a Bearer token, never refreshed.
@@ -142,6 +147,7 @@ class Client:
         password: str | None = None,
         device_auth: bool = False,
         timeout: float = _DEFAULT_TIMEOUT,
+        workspace: str | None = None,
     ) -> None:
         if not server:
             raise ValueError(f"server is required, e.g. Client({DEFAULT_SERVER!r})")
@@ -153,6 +159,7 @@ class Client:
             raise ValueError("username and password go together")
         self.server = server.rstrip("/")
         self.timeout = timeout
+        self.workspace = workspace or ""
         self._username = username
         self._password = password
         self._lock = threading.Lock()
@@ -180,6 +187,8 @@ class Client:
         token = os.getenv("BROKOLI_TOKEN", "")
         if token and "api_key" not in kwargs and "username" not in kwargs:
             kwargs["api_key"] = token
+        if "workspace" not in kwargs and os.getenv("BROKOLI_WORKSPACE"):
+            kwargs["workspace"] = os.getenv("BROKOLI_WORKSPACE")
         return cls(server, **kwargs)
 
     # ------------------------------------------------------------------ auth
@@ -256,6 +265,8 @@ class Client:
             header = self._auth_header()
             if header:
                 headers["Authorization"] = header
+        if self.workspace:
+            headers["X-Workspace-ID"] = self.workspace
         data = None
         if body is not None:
             data = json.dumps(body).encode()
@@ -328,6 +339,8 @@ class Client:
         header = self._auth_header()
         if header:
             headers["Authorization"] = header
+        if self.workspace:
+            headers["X-Workspace-ID"] = self.workspace
         request = urllib.request.Request(url, data=bundle.archive, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -434,7 +447,10 @@ class Client:
         )
         if validate:
             result = validate_pipeline(
-                pipeline, server_url=self.server, auth_header=self._auth_header()
+                pipeline,
+                server_url=self.server,
+                auth_header=self._auth_header(),
+                workspace=self.workspace,
             )
             if not result.valid:
                 raise ValidationError([str(e) for e in result.errors])
@@ -499,6 +515,61 @@ class Client:
         """Wrap an existing run id (from a log, another process, the UI)."""
         return Run(self, run_id)
 
+    def _remote_id(self, pipeline: Any) -> str:
+        identifier = pipeline
+        if not isinstance(pipeline, str):
+            identifier = getattr(pipeline, "pipeline_id", "") or getattr(pipeline, "name", "")
+        return str(self.pipeline(str(identifier))["id"])
+
+    def dry_run(self, pipeline: Any) -> dict[str, Any]:
+        """Execute ``pipeline`` on up to 10 rows without recording a run.
+
+        Returns the server's per-node results under ``"results"``, and
+        ``"error"`` when a node failed (the results up to that point are
+        still returned). It really runs the nodes, against their real
+        connections: a sink still writes. ``pipeline`` resolves the same
+        way as :meth:`run`.
+        """
+        payload = self._request(
+            "POST", f"/api/pipelines/{self._remote_id(pipeline)}/dry-run", body={}
+        )
+        if not isinstance(payload, dict):
+            raise APIError(f"malformed dry-run response: {payload!r}")
+        return payload
+
+    def backfill(
+        self,
+        pipeline: Any,
+        start: "str | datetime.date | datetime.datetime",
+        end: "str | datetime.date | datetime.datetime",
+        *,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Run ``pipeline`` once per scheduled interval between ``start`` and
+        ``end``, and return the server's plan.
+
+        A ``datetime`` (or an RFC3339 string) is an exact instant; a
+        ``date`` (or a ``YYYY-MM-DD`` string) is a whole day, with ``end``
+        inclusive, as ``brokoli backfill`` treats it. ``force`` re-runs
+        intervals that already succeeded.
+        """
+        body: dict[str, Any] = {}
+        for key, value in (("start", start), ("end", end)):
+            field, text = _backfill_bound(key, value)
+            body[field] = text
+        if force:
+            body["force"] = True
+        payload = self._request(
+            "POST", f"/api/pipelines/{self._remote_id(pipeline)}/backfill", body=body
+        )
+        if not isinstance(payload, dict):
+            raise APIError(f"malformed backfill response: {payload!r}")
+        return payload
+
+    def resume(self, run_id: str, *, from_node: str | None = None) -> "Run":
+        """Resume a finished run as a new run; see :meth:`Run.resume`."""
+        return Run(self, run_id).resume(from_node=from_node)
+
     # ----------------------------------------------------------- observability
 
     def dlq(
@@ -525,6 +596,27 @@ class Client:
         if not isinstance(payload, list):
             raise APIError(f"malformed DLQ response for {remote['id']}: {payload!r}")
         return [e for e in payload if isinstance(e, dict)]
+
+
+def _backfill_bound(key: str, value: Any) -> tuple[str, str]:
+    """The backfill request field and text for one bound.
+
+    The server takes ``start``/``end`` as RFC3339 instants, and the older
+    ``start_date``/``end_date`` as whole days, ``end_date`` inclusive.
+    """
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is None:
+            raise ValueError(f"backfill {key} {value!r} needs a timezone")
+        return key, value.isoformat()
+    if isinstance(value, datetime.date):
+        return f"{key}_date", value.isoformat()
+    if isinstance(value, str):
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            return key, value
+        return f"{key}_date", value
+    raise TypeError(f"backfill {key} must be a str, date or datetime, not {type(value).__name__}")
 
 
 class Run:
@@ -614,6 +706,18 @@ class Run:
                 raise TimeoutError(f"run {self.id} still {last_status!r} after {timeout:.0f}s")
             time.sleep(min(interval, remaining))
             interval = min(interval * 1.6, poll_interval)
+
+    def resume(self, *, from_node: str | None = None) -> "Run":
+        """Run this run again from where it stopped, as a new run.
+
+        Without ``from_node`` the new run starts at the first failed node.
+        With it, that node and everything downstream run again. Either
+        way the earlier run's other node outputs are reused rather than
+        recomputed. Returns the new run's handle.
+        """
+        body = {"from_node": from_node} if from_node else {}
+        response = self.client._request("POST", f"/api/runs/{self.id}/resume", body=body)
+        return Run(self.client, _extract_run_id(response))
 
     def cancel(self) -> dict[str, Any]:
         """Request cancellation. Terminal statuses arrive asynchronously —
