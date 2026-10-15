@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Callable
@@ -261,6 +262,110 @@ def _validate_code(name: str, config: dict[str, Any], result: ValidationResult) 
         )
 
 
+_PLATFORM_REFERENCE = re.compile(r"\$\{(interval|env|param|secret|var|run)\.[^}]*\}")
+_BASH_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_bash(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+    command = config.get("command")
+    if not isinstance(command, str) or not command.strip():
+        result.add_error(name, "command", "Bash node requires a non-empty 'command'")
+    elif (reference := _PLATFORM_REFERENCE.search(command)) is not None:
+        result.add_error(
+            name,
+            "command",
+            f"Bash command contains {reference.group(0)}, which must be passed through 'env' instead of shell source",
+        )
+
+    if "working_dir" in config and not isinstance(config["working_dir"], str):
+        result.add_error(name, "working_dir", "Bash 'working_dir' must be a string")
+
+    if "env" not in config:
+        return
+    env = config["env"]
+    if not isinstance(env, dict):
+        result.add_error(name, "env", "Bash 'env' must be an object of string values")
+        return
+    for key, value in env.items():
+        if not isinstance(key, str) or _BASH_ENV_NAME.fullmatch(key) is None:
+            result.add_error(
+                name, "env", f"Bash environment name {key!r} is not a valid shell variable name"
+            )
+            return
+        if not isinstance(value, str) or "\x00" in value:
+            result.add_error(name, "env", "Bash 'env' values must be strings without NUL bytes")
+            return
+
+
+_GO_DURATION = re.compile(
+    r"^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)(ns|us|\u00b5s|ms|s|m|h)(([0-9]+(\.[0-9]*)?|\.[0-9]+)(ns|us|\u00b5s|ms|s|m|h))*$"
+)
+_WAIT_REQUIRES = {
+    "file_exists": "path",
+    "http": "url",
+    "pipeline": "pipeline_id",
+}
+
+
+def _validate_wait(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+    # Mirrors the server's parseWaitCondition (engine/wait.go).
+    condition = config.get("condition")
+    if not condition:
+        result.add_error(
+            name,
+            "condition",
+            "Wait node needs a condition (file_exists, http, interval_elapsed, pipeline)",
+        )
+        return
+    if condition not in (*_WAIT_REQUIRES, "interval_elapsed"):
+        result.add_error(
+            name,
+            "condition",
+            f"Unknown wait condition {condition!r} (known: file_exists, http, interval_elapsed, pipeline)",
+        )
+        return
+    required = _WAIT_REQUIRES.get(condition)
+    if required and not config.get(required):
+        result.add_error(name, required, f"Wait condition {condition} needs a {required}")
+    for key in ("poll_interval", "timeout", "offset"):
+        value = config.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or _GO_DURATION.fullmatch(value) is None:
+            result.add_error(
+                name, key, f"Wait {key} {value!r} is not a duration such as '30s' or '2h'"
+            )
+        elif key != "offset" and (value.startswith("-") or not re.search(r"[1-9]", value)):
+            # The offset may be zero or negative; the poll interval and
+            # the timeout must be positive.
+            result.add_error(name, key, f"Wait {key} {value!r} must be a positive duration")
+
+
+_CONTRACT_IR_KEYS = ("ir_version", "contract", "input", "rules")
+
+
+def _validate_contract_gate(name: str, config: dict[str, Any], result: ValidationResult) -> None:
+    # The server decodes the contract in full; this catches the shapes that
+    # cannot be a contract at all before a deploy round trip.
+    contract = config.get("contract")
+    if contract is None:
+        result.add_error(name, "contract", "contract_gate requires a 'contract'")
+        return
+    if not isinstance(contract, dict):
+        result.add_error(
+            name,
+            "contract",
+            "contract_gate 'contract' must be an actually-fine contract: its IR as a dict, "
+            "or an actually_fine.Contract",
+        )
+        return
+    missing = [key for key in _CONTRACT_IR_KEYS if key not in contract]
+    if missing:
+        result.add_error(
+            name, "contract", f"contract_gate contract is missing {', '.join(missing)}"
+        )
+
+
 def _validate_union(name: str, config: dict[str, Any], result: ValidationResult) -> None:
     if config.get("mode") != "union":
         result.add_error(
@@ -433,6 +538,9 @@ _NODE_VALIDATORS: dict[str, Callable[[str, dict[str, Any], ValidationResult], No
     "transform": _validate_transform,
     "quality_check": _validate_quality_check,
     "code": _validate_code,
+    "bash": _validate_bash,
+    "wait": _validate_wait,
+    "contract_gate": _validate_contract_gate,
     "condition": _validate_condition,
     "sink_db": _validate_sink_db,
     "sink_file": _validate_sink_file,

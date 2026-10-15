@@ -8,6 +8,7 @@ from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
 from brokoli import dbt, notify, migrate, condition_node
 from brokoli import code as code_node
+from brokoli import bash, contract_gate, wait
 from brokoli import Connection
 from brokoli.exceptions import PipelineError
 
@@ -62,6 +63,138 @@ class TestPipelineBasic:
 
         data = p.to_json()
         assert "schedule_timezone" not in data
+
+
+class TestBashNode:
+    def test_serializes_security_relevant_config_and_edge(self):
+        with Pipeline("bash") as p:
+            source = source_file("Input", path="/data/in.csv")
+            command = bash(
+                "Refresh",
+                input=source,
+                command='./refresh.sh --since "$SINCE"',
+                working_dir="/data/jobs",
+                env={"SINCE": "${param.since}"},
+                timeout=600,
+                retries=2,
+                retry_delay=30000,
+                max_memory_mb=512,
+                max_cpu_seconds=300,
+                node_key="refresh-export",
+            )
+
+        node = next(n for n in p.to_json()["nodes"] if n["id"] == command.node_id)
+        assert node["type"] == "bash"
+        assert node["capabilities"] == ["compute"]
+        assert node["config"] == {
+            "command": './refresh.sh --since "$SINCE"',
+            "working_dir": "/data/jobs",
+            "env": {"SINCE": "${param.since}"},
+            "timeout": 600,
+            "max_retries": 2,
+            "retry_backoff": "exponential",
+            "retry_delay": 30000,
+            "max_memory_mb": 512,
+            "max_cpu_seconds": 300,
+        }
+        assert (source.node_id, command.node_id) in {(e["from"], e["to"]) for e in p.to_json()["edges"]}
+
+    def test_omits_unset_options(self):
+        with Pipeline("bash") as p:
+            bash("No options", command="true")
+        assert p.to_json()["nodes"][0]["config"] == {"command": "true"}
+
+
+class TestWaitNode:
+    def test_serializes_condition_and_durations(self):
+        import datetime
+
+        with Pipeline("wait") as p:
+            ready = wait(
+                "Export landed",
+                condition="file_exists",
+                path="/data/in/*.csv",
+                poll_interval=300,
+                timeout=datetime.timedelta(hours=4),
+                offset="15m",
+            )
+            ready >> source_file("Read", path="/data/in/a.csv")
+        data = p.to_json()
+        node = next(n for n in data["nodes"] if n["type"] == "wait")
+        assert node["config"] == {
+            "condition": "file_exists",
+            "path": "/data/in/*.csv",
+            "poll_interval": "300s",
+            "timeout": "14400s",
+            "offset": "15m",
+        }
+        assert node["capabilities"] == ["compute", "dataset-output"]
+
+    def test_input_passes_through(self):
+        with Pipeline("wait") as p:
+            src = source_file("Read", path="/data/in.csv")
+            gate = wait("Upstream done", input=src, condition="pipeline", pipeline_id="nightly")
+        edges = {(e["from"], e["to"]) for e in p.to_json()["edges"]}
+        assert (src.node_id, gate.node_id) in edges
+
+    def test_fractional_seconds_become_milliseconds(self):
+        with Pipeline("wait") as p:
+            wait("Poll", condition="http", url="https://x.example/ready", poll_interval=0.5)
+        assert p.to_json()["nodes"][0]["config"]["poll_interval"] == "500ms"
+
+
+class TestContractGateNode:
+    CONTRACT = {
+        "ir_version": "1.0",
+        "contract": {"id": "orders", "version": "1"},
+        "input": {"kind": "record-stream"},
+        "rules": [],
+    }
+
+    def test_serializes_the_contract_ir(self):
+        with Pipeline("gate") as p:
+            src = source_file("Read", path="/data/in.csv")
+            gate = contract_gate("Orders contract", input=src, contract=self.CONTRACT)
+        node = next(n for n in p.to_json()["nodes"] if n["type"] == "contract_gate")
+        assert node["config"] == {"contract": self.CONTRACT}
+        assert (src.node_id, gate.node_id) in {(e["from"], e["to"]) for e in p.to_json()["edges"]}
+
+    def test_accepts_an_object_with_to_ir(self):
+        class Contract:
+            def to_ir(self):
+                return dict(TestContractGateNode.CONTRACT)
+
+        with Pipeline("gate") as p:
+            contract_gate("Orders contract", contract=Contract())
+        assert p.to_json()["nodes"][0]["config"]["contract"] == self.CONTRACT
+
+    def test_caller_mutation_after_authoring_does_not_leak(self):
+        contract = {**self.CONTRACT, "rules": []}
+        with Pipeline("gate") as p:
+            contract_gate("Orders contract", contract=contract)
+        contract["rules"].append({"id": "late"})
+        assert p.to_json()["nodes"][0]["config"]["contract"]["rules"] == []
+
+
+class TestDbtOptions:
+    def test_vars_dict_is_sent_as_the_json_string_the_server_reads(self):
+        # The server reads config["vars"] as a string; a dict was dropped.
+        with Pipeline("dbt") as p:
+            dbt("Build", command="build", vars={"run_date": "2026-10-14", "full": True})
+        assert p.to_json()["nodes"][0]["config"]["vars"] == '{"full":true,"run_date":"2026-10-14"}'
+
+    def test_vars_string_passes_through(self):
+        with Pipeline("dbt") as p:
+            dbt("Build", vars="{run_date: '2026-10-14'}")
+        assert p.to_json()["nodes"][0]["config"]["vars"] == "{run_date: '2026-10-14'}"
+
+    def test_connection_profile_options(self):
+        with Pipeline("dbt") as p:
+            dbt("Build", conn_id="warehouse", target_schema="analytics", output_model="orders")
+        config = p.to_json()["nodes"][0]["config"]
+        assert config["conn_id"] == "warehouse"
+        assert config["target_schema"] == "analytics"
+        assert config["output_model"] == "orders"
 
 
 class TestChaining:

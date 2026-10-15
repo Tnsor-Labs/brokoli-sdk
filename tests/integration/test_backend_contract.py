@@ -21,6 +21,9 @@ from brokoli import (
     code,
     offset_pages,
     source_api,
+    bash,
+    contract_gate,
+    wait,
 )
 from brokoli.testing import BackendProcess
 from brokoli.exceptions import CompatibilityError
@@ -224,3 +227,75 @@ def test_node_retry_recovers_and_reaches_success(client, tmp_path):
     assert marker.exists()
     assert "recovered" in output_path.read_text()
     assert any(node.get("attempt", 0) for node in detail.get("node_runs", []))
+
+
+def test_wait_whose_condition_holds_passes_its_input_through(client, tmp_path):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    input_path.write_text("id\n1\n2\n")
+
+    with Pipeline("SDK wait contract", pipeline_id=f"sdk-contract-wait-{os.getpid()}") as pipeline:
+        source = source_file("Read", path=str(input_path), format="csv")
+        ready = wait(
+            "Input landed",
+            input=source,
+            condition="file_exists",
+            path=str(input_path),
+            poll_interval=1,
+            timeout=60,
+        )
+        ready >> sink_file("Write", path=str(output_path), format="csv")
+
+    _run(client, pipeline)
+    assert output_path.read_text().splitlines() == ["id", "1", "2"]
+
+
+def test_contract_gate_drops_quarantined_records(client, tmp_path):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    input_path.write_text("id,email\n1,a@example.com\n2,not-an-email\n")
+    contract = {
+        "ir_version": "1.0",
+        "contract": {"id": "people", "version": "1"},
+        "input": {"kind": "record-stream"},
+        "rules": [
+            {
+                "id": "email-valid",
+                "kind": "record",
+                "path": "$.email",
+                "predicate": {"op": "format", "format": "email"},
+                "on_breach": {"severity": "error", "action": "quarantine"},
+            }
+        ],
+    }
+
+    with Pipeline("SDK contract gate", pipeline_id=f"sdk-contract-gate-{os.getpid()}") as pipeline:
+        source = source_file("Read", path=str(input_path), format="csv")
+        clean = contract_gate("People contract", input=source, contract=contract)
+        clean >> sink_file("Write", path=str(output_path), format="csv")
+
+    _run(client, pipeline)
+    output = output_path.read_text()
+    assert "a@example.com" in output
+    assert "not-an-email" not in output
+
+
+def test_bash_runs_with_env_and_passes_input_through(client, tmp_path):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    marker = tmp_path / "marker.txt"
+    input_path.write_text("id\n7\n")
+
+    with Pipeline("SDK bash contract", pipeline_id=f"sdk-contract-bash-{os.getpid()}") as pipeline:
+        source = source_file("Read", path=str(input_path), format="csv")
+        ran = bash(
+            "Touch marker",
+            input=source,
+            command='printf "%s" "$GREETING" > "$MARKER"',
+            env={"GREETING": "hello", "MARKER": str(marker)},
+        )
+        ran >> sink_file("Write", path=str(output_path), format="csv")
+
+    _run(client, pipeline)
+    assert marker.read_text() == "hello"
+    assert output_path.read_text().splitlines() == ["id", "7"]

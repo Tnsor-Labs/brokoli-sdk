@@ -7,6 +7,38 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Fixed
+
+- **`dbt(vars=...)` given a dict was silently dropped.** The server reads
+  `vars` as a string, so a dict never reached dbt's `--vars`. A dict is
+  now sent as JSON; a string is sent as written.
+- **Device login no longer gives up on a rate-limited poll.** HTTP 429,
+  502, 503 and 504 from the poll endpoint now widen the polling interval
+  and keep going until the code expires, instead of aborting a login
+  that may be being approved in the browser at that moment.
+
+### Added
+
+- **`wait()`**: park a run until a condition holds (`file_exists`,
+  `http`, `interval_elapsed`, `pipeline`) without holding a concurrency
+  slot. Durations take a Go duration string, seconds, or a `timedelta`.
+  Needs a server on v0.10.79 or newer.
+- **`contract_gate()`**: enforce an actually-fine data contract on a
+  dataset. Takes the contract IR as a dict, or an `actually_fine.Contract`.
+  Needs a server on v0.13.0 or newer.
+- **`bash()`**: run a trusted Bash command with dynamic values passed
+  through `env`. Platform references in `command` are refused locally, as
+  the server refuses them. Needs a server on v0.15.0 or newer that has not
+  disabled bash nodes.
+- **`dbt()` options `conn_id`, `target_schema` and `output_model`**: build
+  the dbt profile from a Brokoli connection, set its schema, and pick the
+  model whose table the node hands downstream.
+- **Deploy checks the node types.** `GET /api/capabilities` lists the node
+  types a server knows and the ones its operator disabled
+  (`disabled_node_types`); deploy now refuses a pipeline that uses either,
+  naming the type, before anything is saved. Servers that predate the list
+  are not checked.
+
 ## 0.9.0 - 2026-09-08
 
 Requires a Brokoli server on **v0.11.6 or newer** for pipelines that

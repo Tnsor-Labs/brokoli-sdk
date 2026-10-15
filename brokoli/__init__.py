@@ -33,14 +33,17 @@ from brokoli.nodes import (
     filter_rows,
     join,
     quality_check,
+    contract_gate,
     sink_db,
     sink_file,
     sink_api,
     code,
+    bash,
     migrate,
     dbt,
     notify,
     condition_node,
+    wait,
     parallel,
     union,
 )
@@ -176,7 +179,9 @@ __all__ = [
     "case_when",
     "join",
     "quality_check",
+    "contract_gate",
     "code",
+    "bash",
     # Built-in sinks
     "sink_db",
     "sink_file",
@@ -186,6 +191,7 @@ __all__ = [
     "notify",
     "migrate",
     "condition_node",
+    "wait",
     "parallel",
     # Dataset-manifest combination (brokoli-sdk#2) -- see also
     # CollectionRef.collect(mode="union")

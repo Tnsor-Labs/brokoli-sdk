@@ -73,6 +73,10 @@ NODE_TYPE_CAPABILITIES: dict[str, list[str]] = {
     "project": ["compute", "dataset-output"],
     "aggregate": ["compute", "dataset-output"],
     "filter": ["compute", "dataset-output"],
+    "bash": ["compute"],
+    "contract_gate": ["compute"],
+    # A wait passes its input through once its condition holds.
+    "wait": ["compute", "dataset-output"],
 }
 DEFAULT_CAPABILITIES: tuple[str, ...] = ("compute",)
 

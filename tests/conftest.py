@@ -111,6 +111,9 @@ class FakeBrokoli(BaseHTTPRequestHandler):
             answer = (
                 cls.device_poll_answers.pop(0) if cls.device_poll_answers else {"status": "expired"}
             )
+            # {"http_status": 429} answers with that status instead.
+            if "http_status" in answer:
+                return self._json(answer["http_status"], {"error": "try later"})
             return self._json(200, answer)
         if not self._authed():
             return self._json(401, {"error": "unauthenticated"})

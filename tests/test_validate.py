@@ -5,6 +5,7 @@ from brokoli import Pipeline, task, condition
 from brokoli import source_db, source_api, source_file
 from brokoli import transform, join, quality_check
 from brokoli import sink_db, sink_file, sink_api
+from brokoli import bash, contract_gate, wait
 from brokoli.validation import validate_pipeline
 
 
@@ -140,6 +141,90 @@ class TestValidateCodeNode:
         vr = validate_pipeline(p)
         assert not vr.valid
         assert any("script" in e.message.lower() for e in vr.errors)
+
+
+class TestValidateBashNode:
+    def test_valid_command_uses_environment_for_dynamic_values(self):
+        with Pipeline("test") as p:
+            bash("Run", command='tool "$VALUE"', env={"VALUE": "${param.value}"})
+        assert validate_pipeline(p).valid
+
+    @pytest.mark.parametrize(
+        ("config", "field"),
+        [
+            ({"command": ""}, "command"),
+            ({"command": "echo ${param.value}"}, "command"),
+            ({"command": "true", "working_dir": 1}, "working_dir"),
+            ({"command": "true", "env": "VALUE=x"}, "env"),
+            ({"command": "true", "env": {"NOT-VALID": "x"}}, "env"),
+            ({"command": "true", "env": {"VALUE": "bad\x00value"}}, "env"),
+        ],
+    )
+    def test_rejects_unsafe_or_invalid_config(self, config, field):
+        with Pipeline("test") as p:
+            p._add_node("bash_run", "bash", "Run", config)
+        result = validate_pipeline(p)
+        assert not result.valid
+        assert any(issue.field == field for issue in result.errors)
+
+
+class TestValidateWaitNode:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"condition": "file_exists", "path": "/data/x"},
+            {"condition": "http", "url": "https://x.example", "timeout": "2h30m"},
+            {"condition": "interval_elapsed", "offset": "-5m"},
+            {"condition": "interval_elapsed"},
+            {"condition": "pipeline", "pipeline_id": "nightly", "poll_interval": 60},
+        ],
+    )
+    def test_valid(self, kwargs):
+        with Pipeline("test") as p:
+            wait("Wait", **kwargs)
+        assert validate_pipeline(p).valid
+
+    @pytest.mark.parametrize(
+        ("config", "field"),
+        [
+            ({}, "condition"),
+            ({"condition": "sometime"}, "condition"),
+            ({"condition": "file_exists"}, "path"),
+            ({"condition": "http"}, "url"),
+            ({"condition": "pipeline"}, "pipeline_id"),
+            ({"condition": "interval_elapsed", "offset": "soon"}, "offset"),
+            ({"condition": "interval_elapsed", "poll_interval": "0s"}, "poll_interval"),
+            ({"condition": "interval_elapsed", "timeout": "-1h"}, "timeout"),
+            ({"condition": "interval_elapsed", "timeout": 30}, "timeout"),
+        ],
+    )
+    def test_rejects_what_the_server_refuses(self, config, field):
+        with Pipeline("test") as p:
+            p._add_node("wait_1", "wait", "Wait", config)
+        result = validate_pipeline(p)
+        assert not result.valid
+        assert any(issue.field == field for issue in result.errors), result.errors
+
+
+class TestValidateContractGateNode:
+    def test_valid(self):
+        with Pipeline("test") as p:
+            contract_gate(
+                "Gate",
+                contract={"ir_version": "1.0", "contract": {"id": "c", "version": "1"}, "input": {"kind": "record-stream"}, "rules": []},
+            )
+        assert validate_pipeline(p).valid
+
+    @pytest.mark.parametrize(
+        "contract",
+        [None, "orders.contract.json", {"ir_version": "1.0", "rules": []}],
+    )
+    def test_rejects_what_cannot_be_a_contract(self, contract):
+        with Pipeline("test") as p:
+            contract_gate("Gate", contract=contract)
+        result = validate_pipeline(p)
+        assert not result.valid
+        assert any(issue.field == "contract" for issue in result.errors)
 
 
 class TestValidateCondition:

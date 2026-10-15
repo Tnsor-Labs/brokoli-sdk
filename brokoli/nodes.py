@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+import json
 from typing import Optional, Any, TypeVar, Mapping
 
 from brokoli.exceptions import ContextError, PipelineError
@@ -741,6 +743,62 @@ def quality_check(
     return _register_node("quality_check", name, config, *_input_args(input), node_key=node_key)
 
 
+def _contract_ir(contract: Any) -> Any:
+    """The canonical contract IR for *contract*, as a plain dict.
+
+    Accepts the IR itself, or an ``actually_fine.Contract`` (anything with a
+    ``to_ir()`` method), without making actually-fine a dependency.
+    """
+    to_ir = getattr(contract, "to_ir", None)
+    if callable(to_ir):
+        return to_ir()
+    if isinstance(contract, Mapping):
+        return json.loads(json.dumps(dict(contract)))
+    return contract
+
+
+def contract_gate(
+    name: str,
+    input: Optional[NodeRef] = None,
+    contract: Any = None,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    timeout: Any = UNSET,
+    node_key: Optional[str] = None,
+) -> DatasetRef:
+    """Contract gate -- enforce an actually-fine data contract on a dataset.
+
+    ``contract`` is a canonical actually-fine contract: either the IR as a
+    dict, or an ``actually_fine.Contract`` from the actually-fine Python SDK.
+    Records the contract clears flow on downstream; quarantined records are
+    dropped, and a breach of a ``reject`` or ``halt`` rule fails the node
+    after its evidence is recorded. The server decodes the contract and
+    refuses an invalid one when the pipeline is saved.
+
+    Example::
+
+        with Pipeline("Orders") as p:
+            orders = source_db("Extract", query="SELECT * FROM orders")
+            clean = contract_gate("Orders contract", input=orders, contract={
+                "ir_version": "1.0",
+                "contract": {"id": "orders", "version": "1"},
+                "input": {"kind": "record-stream"},
+                "rules": [{
+                    "id": "email-valid", "kind": "record", "path": "$.email",
+                    "predicate": {"op": "format", "format": "email"},
+                    "on_breach": {"severity": "error", "action": "quarantine"},
+                }],
+            })
+            sink_db("Load", input=clean, table="orders")
+    """
+    config: dict = {"contract": _contract_ir(contract)}
+    _add_retry_timeout(config, retries, retry_backoff, retry_delay, timeout)
+    return _register_node(
+        "contract_gate", name, config, *_input_args(input), ref_cls=DatasetRef, node_key=node_key
+    )
+
+
 def code(
     name: str,
     input: Optional[NodeRef] = None,
@@ -775,6 +833,38 @@ def code(
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"language": language, "script": script}, optional)
     return _register_node("code", name, config, *_input_args(input), node_key=node_key)
+
+
+def bash(
+    name: str,
+    input: Optional[NodeRef] = None,
+    command: str = "",
+    working_dir: Any = UNSET,
+    env: Any = UNSET,
+    timeout: Any = UNSET,
+    retries: Any = UNSET,
+    retry_backoff: str = "exponential",
+    retry_delay: Any = UNSET,
+    max_memory_mb: Any = UNSET,
+    max_cpu_seconds: Any = UNSET,
+    node_key: Optional[str] = None,
+) -> NodeRef:
+    """Run a trusted Bash command and pass the input dataset through unchanged.
+
+    Bash nodes execute as the worker OS user and are not a sandbox. The
+    deployment must allow the ``bash`` node type, and the worker must have a
+    Bash executable. Put dynamic values in ``env`` and quote their shell use;
+    platform references are deliberately refused in ``command``.
+    """
+    optional = {
+        "working_dir": working_dir,
+        "env": env,
+        "max_memory_mb": max_memory_mb,
+        "max_cpu_seconds": max_cpu_seconds,
+    }
+    _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
+    config = _build_config({"command": command}, optional)
+    return _register_node("bash", name, config, *_input_args(input), node_key=node_key)
 
 
 # ===================================================================
@@ -1003,6 +1093,15 @@ def migrate(
     return _register_node("migrate", name, config, ref_cls=DatasetRef, node_key=node_key)
 
 
+def _dbt_vars(vars: Any) -> Any:
+    """dbt ``--vars`` as the server reads it: a string. A mapping becomes
+    compact JSON with sorted keys, so the same vars always compile to the
+    same IR (and the TypeScript SDK emits the same string)."""
+    if isinstance(vars, Mapping):
+        return json.dumps(dict(vars), sort_keys=True, separators=(",", ":"))
+    return vars
+
+
 def dbt(
     name: str,
     command: str = "run",
@@ -1017,8 +1116,18 @@ def dbt(
     retry_delay: Any = UNSET,
     timeout: Any = UNSET,
     node_key: Optional[str] = None,
+    conn_id: Any = UNSET,
+    target_schema: Any = UNSET,
+    output_model: Any = UNSET,
 ) -> DatasetRef:
     """Run dbt commands -- run, test, build, seed, snapshot.
+
+    ``vars`` is passed to dbt's ``--vars``: a dict is sent as JSON, a
+    string as written. ``conn_id`` generates the dbt profile from a Brokoli
+    connection, so the warehouse password is not kept twice; an explicit
+    ``profiles_dir`` still wins. ``target_schema`` sets the schema of that
+    generated profile. ``output_model`` names the model whose table this
+    node hands downstream when the selection builds more than one.
 
     Example::
 
@@ -1036,7 +1145,10 @@ def dbt(
         "target": target,
         "select": select,
         "profiles_dir": profiles_dir,
-        "vars": vars,
+        "vars": _dbt_vars(vars),
+        "conn_id": conn_id,
+        "target_schema": target_schema,
+        "output_model": output_model,
     }
     _add_retry_timeout(optional, retries, retry_backoff, retry_delay, timeout)
     config = _build_config({"command": command}, optional)
@@ -1084,6 +1196,82 @@ def notify(
         optional,
     )
     return _register_node("notify", name, config, *_input_args(input), node_key=node_key)
+
+
+def _go_duration(value: Any) -> Any:
+    """A duration as the server reads it: a Go duration string like ``"90s"``.
+
+    Strings pass through unchanged; a number is seconds; a
+    ``datetime.timedelta`` is converted.
+    """
+    if isinstance(value, datetime.timedelta):
+        value = value.total_seconds()
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if float(value).is_integer():
+            return f"{int(value)}s"
+        return f"{int(round(value * 1000))}ms"
+    return value
+
+
+_WAIT_CONDITIONS = ("file_exists", "http", "interval_elapsed", "pipeline")
+
+
+def wait(
+    name: str,
+    input: Optional[NodeRef] = None,
+    condition: str = "",
+    path: Any = UNSET,
+    url: Any = UNSET,
+    expect_status: Any = UNSET,
+    offset: Any = UNSET,
+    pipeline_id: Any = UNSET,
+    poll_interval: Any = UNSET,
+    timeout: Any = UNSET,
+    node_key: Optional[str] = None,
+) -> DatasetRef:
+    """Wait for a condition without holding a run slot.
+
+    When the condition is not met yet, the run parks: it frees its
+    concurrency slot, and the server re-checks every ``poll_interval``
+    (default 30s) until the condition holds or ``timeout`` (default 6h)
+    passes, which fails the node. Any input passes through unchanged.
+
+    ``condition`` is one of:
+
+    * ``"file_exists"`` -- ``path`` (a path or glob in an allowed data
+      directory) matches something.
+    * ``"http"`` -- ``GET url`` returns ``expect_status`` (default 200).
+    * ``"interval_elapsed"`` -- the run's data interval has ended, plus
+      ``offset``.
+    * ``"pipeline"`` -- the latest run of ``pipeline_id`` succeeded.
+
+    Durations (``poll_interval``, ``timeout``, ``offset``) take a Go
+    duration string such as ``"90s"`` or ``"2h30m"``, a number of seconds,
+    or a ``datetime.timedelta``.
+
+    Example::
+
+        with Pipeline("Daily load") as p:
+            ready = wait("Export landed", condition="file_exists",
+                         path="/data/exports/{{ ds }}/*.csv",
+                         poll_interval="5m", timeout="4h")
+            ready >> source_file("Read export", path="/data/exports/{{ ds }}/orders.csv")
+    """
+    optional: dict = {
+        "path": path,
+        "url": url,
+        "expect_status": expect_status,
+        "offset": _go_duration(offset) if offset is not UNSET else UNSET,
+        "pipeline_id": pipeline_id,
+        "poll_interval": _go_duration(poll_interval) if poll_interval is not UNSET else UNSET,
+        "timeout": _go_duration(timeout) if timeout is not UNSET else UNSET,
+    }
+    config = _build_config({"condition": condition}, optional)
+    return _register_node(
+        "wait", name, config, *_input_args(input), ref_cls=DatasetRef, node_key=node_key
+    )
 
 
 def condition_node(

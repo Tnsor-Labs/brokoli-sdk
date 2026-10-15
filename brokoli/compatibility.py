@@ -61,6 +61,11 @@ class ServerCapabilities:
 
     supported_ir_versions: tuple[str, ...]
     supported_execution_features: tuple[str, ...] | None = None
+    # The node types the server knows (the keys of node_type_capabilities)
+    # and the ones its operator turned off. None when the server predates
+    # the field, which skips the check rather than failing it.
+    node_types: tuple[str, ...] | None = None
+    disabled_node_types: tuple[str, ...] | None = None
 
 
 def _legacy_or_raise(message: str, allow_legacy_server: bool) -> None:
@@ -154,10 +159,63 @@ def fetch_server_capabilities(
             "'supported_execution_features' must be a list of non-empty strings."
         )
 
+    node_type_capabilities = payload.get("node_type_capabilities")
+    if node_type_capabilities is not None and not isinstance(node_type_capabilities, dict):
+        raise CompatibilityError(
+            f"Server {server} returned an invalid /api/capabilities payload: "
+            "'node_type_capabilities' must be an object."
+        )
+
+    # A server that disables nothing may send null rather than [].
+    disabled = payload.get("disabled_node_types")
+    if disabled is not None and (
+        not isinstance(disabled, list) or any(not isinstance(t, str) or not t for t in disabled)
+    ):
+        raise CompatibilityError(
+            f"Server {server} returned an invalid /api/capabilities payload: "
+            "'disabled_node_types' must be a list of non-empty strings."
+        )
+
     return ServerCapabilities(
         tuple(versions),
         None if features is None else tuple(features),
+        None if node_type_capabilities is None else tuple(node_type_capabilities),
+        None if disabled is None and node_type_capabilities is None else tuple(disabled or ()),
     )
+
+
+# Node types the server's node_type_capabilities table does not list
+# although it runs them: "task" is gated by its execution features instead
+# (task-runtime-v1, task-bundle-v2), which required_execution_features
+# already checks.
+_UNLISTED_NODE_TYPES = frozenset({"task"})
+
+
+def node_type_problems(payload: dict[str, Any], capabilities: ServerCapabilities) -> list[str]:
+    """Why the server would refuse the pipeline's node types, if it would.
+
+    A node type the server does not list is one it predates; one in its
+    ``disabled_node_types`` is one its operator turned off. Either way the
+    server's validator refuses the pipeline, so deploy says so first.
+    """
+    types: set[str] = set()
+    for node in payload.get("nodes", []):
+        if isinstance(node, dict) and isinstance(node.get("type"), str):
+            types.add(node["type"])
+    problems: list[str] = []
+    disabled = set(capabilities.disabled_node_types or ())
+    for node_type in sorted(types):
+        if node_type in disabled:
+            problems.append(f"{node_type} nodes are disabled on this server")
+        elif (
+            capabilities.node_types is not None
+            and node_type not in capabilities.node_types
+            and node_type not in _UNLISTED_NODE_TYPES
+        ):
+            problems.append(
+                f"this server does not know the {node_type} node type; upgrade the server"
+            )
+    return problems
 
 
 # Feature names follow the server's vocabulary (models.SupportedExecutionFeatures
@@ -316,6 +374,15 @@ def preflight_server_compatibility(
             # the wrapper/worker/mount machinery a 0.11.x+ feature name
             # refers to.
             missing = required & RUNTIME_EXISTENCE_FEATURES
+        problems = node_type_problems(payload, capabilities)
+        if problems:
+            name = getattr(pipeline, "name", "<unnamed>")
+            raise CompatibilityError(
+                f"Pipeline {name!r} cannot run on {server.rstrip('/')}: "
+                + "; ".join(problems)
+                + ". --allow-legacy-server cannot override this."
+            )
+
         if missing:
             name = getattr(pipeline, "name", "<unnamed>")
             missing_text = ", ".join(sorted(missing))

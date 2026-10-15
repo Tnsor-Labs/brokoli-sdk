@@ -41,6 +41,24 @@ class TestDeviceLogin:
         ]
         assert device.device_login(server, open_browser=False, echo=lambda _line: None) == "tok-9"
 
+    def test_rate_limited_poll_backs_off_and_keeps_polling(self, server, credfile, monkeypatch):
+        # ts#29: a 429 is "not now", not "no"; the code is still good.
+        slept = []
+        monkeypatch.setattr(device.time, "sleep", slept.append)
+        FakeBrokoli.device_poll_answers = [
+            {"http_status": 429},
+            {"http_status": 503},
+            {"status": "approved", "token": "tok-429", "username": ""},
+        ]
+        assert device.device_login(server, open_browser=False, echo=lambda _line: None) == "tok-429"
+        assert slept[1] > slept[0] and slept[2] > slept[1], f"no back-off: {slept}"
+
+    def test_other_poll_failures_still_raise(self, server, credfile, monkeypatch):
+        monkeypatch.setattr(device.time, "sleep", lambda _s: None)
+        FakeBrokoli.device_poll_answers = [{"http_status": 500}]
+        with pytest.raises(device.DeviceAuthError, match="HTTP 500"):
+            device.device_login(server, open_browser=False, echo=lambda _line: None)
+
     def test_denied_raises(self, server, credfile):
         FakeBrokoli.device_poll_answers = [{"status": "access_denied"}]
         with pytest.raises(device.DeviceAuthError, match="denied"):
