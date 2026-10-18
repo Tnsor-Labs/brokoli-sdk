@@ -1225,9 +1225,7 @@ def plan_cmd(args: argparse.Namespace) -> int:
                     if args.diff and item["diff"]:
                         print("".join("      " + line for line in item["diff"].splitlines(True)))
             if entry["server_only"]:
-                print(
-                    "  on the server, not in this folder: " + ", ".join(entry["server_only"])
-                )
+                print("  on the server, not in this folder: " + ", ".join(entry["server_only"]))
         print(f"\n{changes} pipeline(s) to add or change")
     if args.detailed_exitcode and changes:
         return 2

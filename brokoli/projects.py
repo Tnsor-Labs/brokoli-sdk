@@ -182,7 +182,9 @@ def load_config(root: "str | os.PathLike[str]") -> ProjectConfig:
     workspaces: dict[str, WorkspaceSpec] = {}
     raw_ws = data.get("workspaces")
     if not isinstance(raw_ws, dict) or not raw_ws:
-        problems.append(f"{PROJECT_FILE}: 'workspaces' must map at least one workspace to its folder")
+        problems.append(
+            f"{PROJECT_FILE}: 'workspaces' must map at least one workspace to its folder"
+        )
         raw_ws = {}
     for name, spec in raw_ws.items():
         where = f"{PROJECT_FILE}: workspace {name!r}"

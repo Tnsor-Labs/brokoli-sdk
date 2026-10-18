@@ -24,10 +24,10 @@ from brokoli.projects import (
 from brokoli.scaffold import init_project, new_pipeline
 from brokoli.validation import validate_pipeline
 
-PIPELINE = '''from brokoli import Pipeline, source_api
+PIPELINE = """from brokoli import Pipeline, source_api
 with Pipeline("{name}", pipeline_id="{pid}", description="{desc}") as p:
     source_api("Fetch", url="https://example.com/{pid}")
-'''
+"""
 
 
 def write(path: Path, body: str) -> Path:
@@ -171,9 +171,7 @@ def test_hidden_and_underscored_folders_are_ignored(tmp_path):
 
 
 def test_the_folder_must_be_the_pipeline_id(tmp_path):
-    project(
-        tmp_path, TWO_WS, {"workspaces/analytics/pipelines/orders/pipeline.py": pipe("orderz")}
-    )
+    project(tmp_path, TWO_WS, {"workspaces/analytics/pipelines/orders/pipeline.py": pipe("orderz")})
     with pytest.raises(ProjectError) as exc:
         load_project(tmp_path)
     assert "pipeline_id is 'orderz' but the folder is 'orders'" in exc.value.problems[0]
@@ -293,7 +291,7 @@ def test_init_creates_a_project_whose_example_validates(tmp_path):
     assert validate_pipeline(p.pipelines[0].pipeline).valid
     assert p.config.branches["main"].production
     workflow = (tmp_path / "acme/.github/workflows/brokoli.yml").read_text()
-    assert f'brokoli=={brokoli.__version__}' in workflow
+    assert f"brokoli=={brokoli.__version__}" in workflow
 
 
 @pytest.mark.parametrize("template", ["basic", "python"])
