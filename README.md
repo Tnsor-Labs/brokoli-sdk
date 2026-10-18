@@ -424,6 +424,22 @@ quality_check("Validate", data, rules=[
 ])
 ```
 
+## Projects
+
+A repository with many pipelines, across workspaces, is a project: a
+`brokoli.yaml` with `version: 1` and one folder per pipeline.
+
+```bash
+brokoli init acme --workspace analytics      # layout, brokoli.yaml, CI workflow
+brokoli new pipeline orders-daily            # workspaces/analytics/pipelines/orders-daily/pipeline.py
+brokoli validate                             # every pipeline in the project
+brokoli compile --project --out build        # IR, task bundles, manifest of digests
+brokoli plan --env prod                      # what a deploy would add or change, per workspace
+```
+
+See [docs/projects.md](docs/projects.md) for the layout rules, the
+`brokoli.yaml` reference and CI.
+
 ## CLI
 
 ```bash
