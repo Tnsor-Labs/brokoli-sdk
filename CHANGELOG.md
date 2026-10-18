@@ -7,6 +7,29 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Added
+
+- **Projects.** A repository of pipelines with a `brokoli.yaml` that
+  declares `version: 1`: one folder per workspace, one folder per
+  pipeline (`workspaces/<workspace>/pipelines/<pipeline_id>/pipeline.py`),
+  and a `shared/` package every pipeline can import. The folder name is
+  the pipeline's `pipeline_id`, each `pipeline.py` defines one pipeline,
+  and only `main` may be a production branch. A `brokoli.yaml` without
+  `version` keeps working for `--env` as before. See `docs/projects.md`.
+- `brokoli init`: creates a project, with an example pipeline and a GitHub
+  Actions workflow that validates it. Writes nothing if any file exists.
+- `brokoli new pipeline <id>`: adds a pipeline folder from a template
+  (`basic` or `python`).
+- `brokoli validate` without a file validates the whole project, offline
+  unless given a server.
+- `brokoli compile --project [--out build]`: writes every pipeline's
+  normalized IR, its task bundles, and a manifest. The build is
+  deterministic, and each IR file's sha256 is its manifest digest.
+- `brokoli plan`: compares the project with a server, each workspace with
+  its own server workspace: added, changed, unchanged, and pipelines on
+  the server that the folder does not have. `--diff`, `--json`,
+  `--detailed-exitcode`.
+
 ## 0.10.0 - 2026-10-15
 
 Catches the SDK up with core v0.12 to v0.18. Each feature that needs a

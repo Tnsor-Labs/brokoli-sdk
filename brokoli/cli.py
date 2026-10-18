@@ -715,6 +715,18 @@ def _validate_pipeline_detail(detail: Any, pipeline_name: str) -> dict[str, Any]
     return validated
 
 
+def _compile_dispatch(args: argparse.Namespace) -> int:
+    if getattr(args, "project", False):
+        if args.file is not None:
+            print("--project compiles the whole project; drop the file argument")
+            return 2
+        return compile_project_cmd(args)
+    if args.file is None:
+        print("compile needs a file, or --project for the whole project")
+        return 2
+    return compile_cmd(args)
+
+
 def diff_cmd(args: argparse.Namespace) -> int:
     """Compare local normalized pipeline IR with full server definitions."""
     server, auth_header = _resolve_target(args, "diff")
@@ -988,6 +1000,238 @@ def auth_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- projects
+#
+# A project is a repository of pipelines described by a brokoli.yaml with
+# `version: 1` (brokoli.project). These commands work on the whole tree.
+
+
+def _print_problems(title: str, problems: Sequence[str]) -> None:
+    print(title)
+    for problem in problems:
+        print(f"  - {problem}")
+
+
+def init_cmd(args: argparse.Namespace) -> int:
+    """Create a project."""
+    from brokoli.projects import ProjectError
+    from brokoli.scaffold import init_project
+
+    try:
+        written = init_project(
+            args.directory,
+            workspace=args.workspace,
+            example=args.example,
+            template=args.template,
+            workflow=not args.no_workflow,
+        )
+    except ProjectError as exc:
+        _print_problems("Nothing was created:", exc.problems)
+        return 1
+    root = Path(args.directory)
+    print(f"Created a Brokoli project in {root.resolve()}:")
+    for path in written:
+        print(f"  {path.relative_to(root)}")
+    print("\nNext: brokoli validate")
+    return 0
+
+
+def new_pipeline_cmd(args: argparse.Namespace) -> int:
+    """Add a pipeline folder to the project."""
+    from brokoli.projects import ProjectError
+    from brokoli.scaffold import new_pipeline
+
+    try:
+        path = new_pipeline(args.pipeline_id, workspace=args.workspace, template=args.template)
+    except ProjectError as exc:
+        _print_problems("Nothing was created:", exc.problems)
+        return 1
+    print(f"Created {path}")
+    return 0
+
+
+def _load_project_or_report() -> Any:
+    from brokoli.projects import ProjectError, load_project
+
+    try:
+        return load_project(".")
+    except ProjectError as exc:
+        _print_problems("The project has problems:", exc.problems)
+        return None
+
+
+def validate_project_cmd(args: argparse.Namespace) -> int:
+    """Validate every pipeline in the project. Offline unless --server or
+    --env is given, in which case each workspace with an `id` is also
+    checked against that server (connections, capabilities)."""
+    from brokoli.validation import validate_pipeline
+
+    project = _load_project_or_report()
+    if project is None:
+        return 1
+    online = bool(getattr(args, "server", None) or getattr(args, "env", None))
+    server = auth_header = ""
+    if online:
+        server, auth_header = _resolve_target(args, "validate")
+
+    global _cli_workspace
+    total_errors = 0
+    for name, spec in sorted(project.config.workspaces.items()):
+        items = project.in_workspace(name)
+        if not items:
+            continue
+        print(f"Workspace {name} ({spec.path}): {len(items)} pipeline(s)")
+        ws_online = online and bool(spec.id)
+        if online and not spec.id:
+            print(f"  (no 'id' for {name} in brokoli.yaml: checked offline only)")
+        if ws_online:
+            _cli_workspace = spec.id
+            preflight_server_compatibility(
+                [i.pipeline for i in items],
+                server,
+                auth_header,
+                allow_legacy_server=getattr(args, "allow_legacy_server", False),
+            )
+        for item in items:
+            print(f"  {item.source.pipeline_id}")
+            if ws_online:
+                vr = validate_pipeline(
+                    item.pipeline, server_url=server, auth_header=auth_header, workspace=spec.id
+                )
+            else:
+                vr = validate_pipeline(item.pipeline)
+            vr.print_report()
+            total_errors += len(vr.errors)
+    if not project.pipelines:
+        print("No pipelines yet (add one with: brokoli new pipeline <id>)")
+    if total_errors:
+        raise ValidationError([f"{total_errors} validation error(s) found"])
+    print(f"All {len(project.pipelines)} pipeline(s) valid")
+    return 0
+
+
+def compile_project_cmd(args: argparse.Namespace) -> int:
+    """Compile the whole project: IR, task bundles, and a manifest."""
+    from brokoli.projects import ProjectError, compile_project
+
+    if getattr(args, "normalized", False) or getattr(args, "check", False):
+        print("--project writes a build; use `brokoli validate` to check a project")
+        return 2
+    project = _load_project_or_report()
+    if project is None:
+        return 1
+    if getattr(args, "digest", False):
+        for item in sorted(
+            project.pipelines, key=lambda i: (i.source.workspace, i.source.pipeline_id)
+        ):
+            print(f"{ir_digest(item.pipeline.to_json())}  {item.source.folder}")
+        return 0
+    try:
+        manifest = compile_project(project, args.out)
+    except ProjectError as exc:
+        _print_problems("Nothing was compiled:", exc.problems)
+        return 1
+    for entry in manifest["pipelines"]:
+        print(f"{entry['digest']}  {entry['folder']}")
+    print(f"Wrote {len(manifest['pipelines'])} pipeline(s) to {args.out}")
+    return 0
+
+
+def plan_cmd(args: argparse.Namespace) -> int:
+    """Compare the project with a server, workspace by workspace: which
+    pipelines a deploy would add or change, which are unchanged, and which
+    the server has that the folder does not."""
+    global _cli_workspace
+    project = _load_project_or_report()
+    if project is None:
+        return 1
+    server, auth_header = _resolve_target(args, "plan")
+    explicit_ws = _cli_workspace  # --workspace / BROKOLI_WORKSPACE / the env's workspace
+
+    names = sorted(project.config.workspaces)
+    if args.only:
+        if args.only not in project.config.workspaces:
+            raise DeployError("plan", 0, f"no workspace {args.only!r} (have: {', '.join(names)})")
+        names = [args.only]
+    if getattr(args, "workspace", None) and len(names) > 1:
+        raise DeployError(
+            "plan", 0, "--workspace names one server workspace; use it with --only <workspace>"
+        )
+
+    report: list[dict[str, Any]] = []
+    changes = 0
+    for name in names:
+        spec = project.config.workspaces[name]
+        ws_id = spec.id or (explicit_ws if len(names) == 1 else "")
+        if getattr(args, "workspace", None):
+            ws_id = args.workspace
+        if not ws_id:
+            raise DeployError(
+                "plan",
+                0,
+                f"workspace {name!r} has no server workspace: add `id:` to it in brokoli.yaml "
+                f"or pass --only {name} --workspace <id>",
+            )
+        _cli_workspace = ws_id
+        items = project.in_workspace(name)
+        remote = _list_remote_pipelines(server, auth_header, "plan")
+        matches = _match_remote_pipelines([i.pipeline for i in items], remote)
+        entry: dict[str, Any] = {
+            "workspace": name,
+            "server_workspace": ws_id,
+            "added": [],
+            "changed": [],
+            "unchanged": [],
+            "server_only": [],
+        }
+        matched: set[str] = set()
+        for item, match in zip(items, matches):
+            pid = item.source.pipeline_id
+            if match is None:
+                entry["added"].append({"pipeline_id": pid, "diff": ""})
+                continue
+            remote_id = str(match.get("id"))
+            matched.add(remote_id)
+            detail = _get_json(
+                f"{server}/api/pipelines/{urllib.parse.quote(remote_id, safe='')}",
+                auth_header,
+                "plan",
+            )
+            remote_ir = _validate_pipeline_detail(detail, item.pipeline.name)
+            difference = diff_ir(
+                item.pipeline.to_json(),
+                remote_ir,
+                local_label=f"{item.source.folder}/pipeline.py",
+                remote_label=f"server/{pid}",
+            )
+            key = "changed" if difference else "unchanged"
+            entry[key].append({"pipeline_id": pid, "diff": difference})
+        entry["server_only"] = sorted(
+            str(r.get("pipeline_id") or r.get("name") or r.get("id"))
+            for r in remote
+            if str(r.get("id")) not in matched
+        )
+        changes += len(entry["added"]) + len(entry["changed"])
+        report.append(entry)
+
+    if args.json:
+        print(json.dumps({"server": server, "workspaces": report}, indent=2, sort_keys=True))
+    else:
+        for entry in report:
+            print(f"Workspace {entry['workspace']} -> {entry['server_workspace']}")
+            for label, mark in (("added", "+"), ("changed", "~"), ("unchanged", "=")):
+                for item in entry[label]:
+                    print(f"  {mark} {item['pipeline_id']} ({label})")
+                    if args.diff and item["diff"]:
+                        print("".join("      " + line for line in item["diff"].splitlines(True)))
+            if entry["server_only"]:
+                print("  on the server, not in this folder: " + ", ".join(entry["server_only"]))
+        print(f"\n{changes} pipeline(s) to add or change")
+    if args.detailed_exitcode and changes:
+        return 2
+    return 0
+
+
 def main() -> None:
     """CLI entry point. This is the only place that catches exceptions and exits."""
     parser = argparse.ArgumentParser(prog="brokoli", description="Brokoli Python SDK CLI")
@@ -1029,8 +1273,13 @@ def main() -> None:
     dp.set_defaults(func=deploy)
 
     # validate (without deploying)
-    vp = sub.add_parser("validate", help="Validate pipeline(s) without deploying")
-    vp.add_argument("file", help="Python file or directory")
+    vp = sub.add_parser(
+        "validate",
+        help="Validate pipeline(s) without deploying; without a file, the whole project",
+    )
+    vp.add_argument(
+        "file", nargs="?", default=None, help="Python file or directory (default: the project)"
+    )
     vp.add_argument("--server", default=None, help="Brokoli server URL (for conn_id checks)")
     vp.add_argument(
         "--workspace",
@@ -1046,11 +1295,19 @@ def main() -> None:
         action="store_true",
         help="Allow a trusted server that predates capability negotiation",
     )
-    vp.set_defaults(func=validate_cmd)
+    vp.set_defaults(
+        func=lambda a: validate_cmd(a) if a.file is not None else validate_project_cmd(a)
+    )
 
     # compile
     cp = sub.add_parser("compile", help="Compile pipeline to YAML (default) or JSON")
-    cp.add_argument("file", help="Python file containing pipeline(s)")
+    cp.add_argument("file", nargs="?", default=None, help="Python file containing pipeline(s)")
+    cp.add_argument(
+        "--project",
+        action="store_true",
+        help="Compile the whole project: IR, task bundles and a manifest, under --out",
+    )
+    cp.add_argument("--out", default="build", help="Output folder for --project (default: build)")
     cp.add_argument(
         "-f",
         "--format",
@@ -1074,7 +1331,44 @@ def main() -> None:
         action="store_true",
         help="Print a stable sha256 IR digest per pipeline (for audit/CI)",
     )
-    cp.set_defaults(func=compile_cmd)
+    cp.set_defaults(func=_compile_dispatch)
+
+    # init
+    ip = sub.add_parser("init", help="Create a Brokoli project (brokoli.yaml and folders)")
+    ip.add_argument("directory", nargs="?", default=".", help="Where (default: here)")
+    ip.add_argument("--workspace", default="default", help="First workspace (default: default)")
+    ip.add_argument("--example", default="example", help="Example pipeline id (default: example)")
+    ip.add_argument("--template", choices=["basic", "python"], default="basic")
+    ip.add_argument("--no-workflow", action="store_true", help="Skip the GitHub Actions workflow")
+    ip.set_defaults(func=init_cmd)
+
+    # new pipeline
+    np_ = sub.add_parser("new", help="Add to the project")
+    np_sub = np_.add_subparsers(dest="what", metavar="pipeline")
+    np_sub.required = True
+    npp = np_sub.add_parser("pipeline", help="Add a pipeline folder from a template")
+    npp.add_argument("pipeline_id", help="The pipeline id, which is also its folder name")
+    npp.add_argument("--workspace", default=None, help="Workspace (needed when there are several)")
+    npp.add_argument("--template", choices=["basic", "python"], default="basic")
+    npp.set_defaults(func=new_pipeline_cmd)
+
+    # plan
+    pp = sub.add_parser("plan", help="Compare the project with a server, workspace by workspace")
+    pp.add_argument("--server", default=None, help="Brokoli server URL")
+    pp.add_argument("--env", default=None, help="Named environment from brokoli.yaml")
+    pp.add_argument("--api-key", default="", help="API key for authentication")
+    pp.add_argument("--only", default=None, help="Plan one project workspace")
+    pp.add_argument(
+        "--workspace", default=None, help="Server workspace id for --only (overrides its id)"
+    )
+    pp.add_argument("--diff", action="store_true", help="Show each changed pipeline's IR diff")
+    pp.add_argument("--json", action="store_true", help="Machine-readable output")
+    pp.add_argument(
+        "--detailed-exitcode",
+        action="store_true",
+        help="Exit 2 when something would be added or changed",
+    )
+    pp.set_defaults(func=plan_cmd)
 
     # diff
     df = sub.add_parser("diff", help="Compare local IR with server pipeline definitions")
