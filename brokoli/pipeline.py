@@ -1842,6 +1842,41 @@ _current_pipeline_var: "contextvars.ContextVar[Optional[Pipeline]]" = contextvar
 )
 
 
+# Where in a file each node was created, for ``brokoli propose`` (which
+# rewrites the call that made a node). Inactive -- one context-variable read
+# per node -- unless a recorder is set: a dict naming the file to look for,
+# filled with node id -> (start line, end line, start column, end column,
+# scope) of the call in that file that created it. Columns are CPython's
+# (UTF-8 bytes, end exclusive), known on 3.11+ and None before.
+_node_sites: "contextvars.ContextVar[dict[str, Any] | None]" = contextvars.ContextVar(
+    "brokoli_node_sites", default=None
+)
+
+
+def _record_node_site(node_id: str) -> None:
+    recorder = _node_sites.get()
+    if recorder is None:
+        return
+    target = recorder["file"]
+    frame: Any = sys._getframe(1)
+    while frame is not None and frame.f_code.co_filename != target:
+        frame = frame.f_back
+    if frame is None:
+        recorder["sites"][node_id] = None  # made outside the file
+        return
+    start = end = frame.f_lineno
+    col = end_col = None
+    positions = getattr(frame.f_code, "co_positions", None)
+    if positions is not None:  # Python 3.11+: the call's own span
+        try:
+            span = list(positions())[frame.f_lasti // 2]
+            if None not in span:
+                start, end, col, end_col = span
+        except (IndexError, TypeError, ValueError):
+            pass
+    recorder["sites"][node_id] = (start, end, col, end_col, frame.f_code.co_name)
+
+
 class Pipeline:
     """Pipeline definition -- use as a context manager."""
 
@@ -2096,6 +2131,7 @@ class Pipeline:
             "interface": interface,
         }
         self._node_order.append(node_id)
+        _record_node_site(node_id)
 
     def _add_edge(self, from_id: str, to_id: str, condition: bool | None = None) -> None:
         if from_id not in self._nodes or to_id not in self._nodes:

@@ -220,6 +220,84 @@ Workspace finance -> 01a0f7...
   whole plan as JSON; `--detailed-exitcode` exits 2 when something would
   be added or changed (0 when nothing would).
 
+### `brokoli propose <folder> --changes <file>`
+
+Writes changes to a pipeline's definition -- made by hand, or by a tool
+that edits pipelines -- into its `pipeline.py`, keeping the rest of the
+file exactly as written: comments, formatting, imports and helpers. It
+needs LibCST:
+
+```bash
+pip install 'brokoli[propose]'
+```
+
+The changes are a JSON list, in the IR's terms:
+
+```json
+[
+  {"target": "pipeline", "field": "schedule", "value": "*/30 * * * *"},
+  {"target": "node", "node_id": "fetch_orders_1", "field": "config.timeout", "value": 30},
+  {"target": "node", "node_id": "fetch_orders_1", "field": "name", "value": "Fetch shop orders"},
+  {"target": "node", "node_id": "fetch_orders_1", "field": "config.records", "remove": true}
+]
+```
+
+```bash
+brokoli propose workspaces/analytics/pipelines/orders --changes changes.json
+```
+
+```diff
+--- a/workspaces/analytics/pipelines/orders/pipeline.py
++++ b/workspaces/analytics/pipelines/orders/pipeline.py
+@@ ...
+-    schedule="0 * * * *",  # hourly
++    schedule="*/30 * * * *",  # hourly
+ ) as p:
+     orders = source_api(
+-        "Fetch orders",
++        "Fetch shop orders",
+         url="https://shop.example.com/orders",
+-        timeout=15,
+-        records="orders",
++        timeout=30,
++        node_key="fetch_orders_1",
+     )
+```
+
+What it can change:
+
+| Field | Written as |
+|---|---|
+| `name`, `description`, `schedule`, `schedule_timezone`, `tags` of the pipeline | the `Pipeline(...)` argument (the name is its first argument); an empty `schedule_timezone` removes the argument |
+| a node's `name` | the call's first argument, plus `node_key="<its id>"` so the node keeps its id (ids come from names otherwise, and a new id would be a new node to the platform) |
+| a node's `config.<key>` | the call's `<key>=` argument: replaced, added after the last argument in the call's own layout, or removed with `"remove": true` |
+
+**Every change is verified.** After each edit the file is compiled again,
+and the change is kept only when the new IR is the old IR with exactly that
+change made. A change that does not come out that way is skipped, with the
+reason, and the file is left without it:
+
+| Skipped because | Example |
+|---|---|
+| the SDK compiles the argument to something else | `wait(timeout=30)` compiles to `"30s"`, so a change asking for `30` is refused; `"90s"` goes through |
+| the node is made in a loop, a comprehension, or a helper that makes several nodes | `[sink_db(f"Copy {i}", ...) for i in (1, 2)]` |
+| the node is made inside a function | `def audit(name): return transform(...)` |
+| the argument does not exist | a config key the node function does not take |
+| the field is not supported yet | `catch_up`, a node's inputs; adding or removing nodes and edges |
+
+Nodes are found by where they were made: the file is compiled with a
+recorder noting the call that created each node, so the right call is
+edited even when two nodes have similar names, or a call contains other
+calls on the same line.
+
+Options: `--write` writes the result into `pipeline.py` (without it the
+file is not touched and the diff is printed); `--json` prints `changed`,
+`applied`, `skipped` (each with its `reason`), the new `source` and the
+`diff`; `--project` names the project root when not run from inside it.
+`propose` writes no bytecode into the project. It exits 1 only when the
+file cannot be worked on at all: it does not compile, defines more than one
+pipeline, or is outside the project.
+
 ## In CI
 
 The workflow `brokoli init` writes validates and compiles on every pull
