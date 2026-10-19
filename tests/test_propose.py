@@ -322,3 +322,23 @@ def test_a_node_without_a_site_is_skipped() -> None:
     module = libcst.parse_module(ORDERS)
     edited, why = _edit(module, {"x": None}, Change("node", "config.url", "u", node_id="x"))
     assert edited is None and "outside pipeline.py" in why
+
+
+def test_without_columns_the_call_is_found_by_line_and_callee(root: Path) -> None:
+    # Before Python 3.11 a frame has no column span, only a line. The call
+    # is then the one to the function the file called, on that line: not
+    # the dict(...) inside it.
+    import libcst
+
+    from brokoli.propose import _Locator
+
+    locator = _Locator(libcst.parse_module(ORDERS))
+    line = (
+        ORDERS.splitlines().index(
+            '    clean = transform("Clean", rules=[dict(type="drop_columns", columns=["tmp", "café"])])'
+        )
+        + 1
+    )
+    call = locator.node_call(line, line, None, None, "transform")
+    assert call is not None and libcst.Module([]).code_for_node(call.func) == "transform"
+    assert locator.node_call(line, line, None, None, "sink_db") is None

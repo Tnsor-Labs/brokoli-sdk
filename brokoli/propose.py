@@ -285,15 +285,20 @@ class _Locator:
         return found[0] if len(found) == 1 else None
 
     def node_call(
-        self, start: int, end: int, col: Optional[int], end_col: Optional[int]
+        self, start: int, end: int, col: Optional[int], end_col: Optional[int], callee: str
     ) -> Optional[Any]:
         """The call that made a node. With columns (Python 3.11+) the call
-        whose span is exactly the recorded one; without, the innermost call
-        spanning those lines, when there is exactly one."""
+        whose span is exactly the recorded one. Without, the innermost call
+        to *callee* (the function the file called) spanning those lines,
+        when there is exactly one."""
         if col is not None and end_col is not None:
             exact = [c[0] for c in self.calls if c[1:] == (start, end, col, end_col)]
             return exact[0] if len(exact) == 1 else None
-        spanning = [(c[2] - c[1], c[0]) for c in self.calls if c[1] <= start and c[2] >= end]
+        spanning = [
+            (c[2] - c[1], c[0])
+            for c in self.calls
+            if c[1] <= start and c[2] >= end and _callee(c[0]) == callee
+        ]
         if not spanning:
             return None
         spanning.sort(key=lambda t: t[0])
@@ -357,10 +362,10 @@ def _edit(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[
         return None, "the node is made outside pipeline.py (in another module)"
     if sum(1 for s in sites.values() if s == site) > 1:
         return None, "the node is made by a loop or a helper that makes several nodes"
-    start, end, col, end_col, scope = site
+    start, end, col, end_col, scope, callee = site
     if scope != "<module>":
         return None, f"the node is made inside {scope}(), not where the pipeline is written"
-    call = locator.node_call(start, end, col, end_col)
+    call = locator.node_call(start, end, col, end_col, callee)
     if call is None:
         return None, "the call that makes the node could not be found"
     if change.field == "name":

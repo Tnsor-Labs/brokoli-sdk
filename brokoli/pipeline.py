@@ -1846,8 +1846,10 @@ _current_pipeline_var: "contextvars.ContextVar[Optional[Pipeline]]" = contextvar
 # rewrites the call that made a node). Inactive -- one context-variable read
 # per node -- unless a recorder is set: a dict naming the file to look for,
 # filled with node id -> (start line, end line, start column, end column,
-# scope) of the call in that file that created it. Columns are CPython's
-# (UTF-8 bytes, end exclusive), known on 3.11+ and None before.
+# scope, callee) of the call in that file that created it: scope is the
+# function the call is in ("<module>" at the top level), callee the function
+# it called. Columns are CPython's (UTF-8 bytes, end exclusive), known on
+# 3.11+ and None before.
 _node_sites: "contextvars.ContextVar[dict[str, Any] | None]" = contextvars.ContextVar(
     "brokoli_node_sites", default=None
 )
@@ -1859,8 +1861,9 @@ def _record_node_site(node_id: str) -> None:
         return
     target = recorder["file"]
     frame: Any = sys._getframe(1)
+    called: Any = None
     while frame is not None and frame.f_code.co_filename != target:
-        frame = frame.f_back
+        called, frame = frame, frame.f_back
     if frame is None:
         recorder["sites"][node_id] = None  # made outside the file
         return
@@ -1874,7 +1877,8 @@ def _record_node_site(node_id: str) -> None:
                 start, end, col, end_col = span
         except (IndexError, TypeError, ValueError):
             pass
-    recorder["sites"][node_id] = (start, end, col, end_col, frame.f_code.co_name)
+    callee = called.f_code.co_name if called is not None else ""
+    recorder["sites"][node_id] = (start, end, col, end_col, frame.f_code.co_name, callee)
 
 
 class Pipeline:
