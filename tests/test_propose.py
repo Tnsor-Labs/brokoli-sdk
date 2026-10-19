@@ -298,6 +298,18 @@ def test_the_cli(
     assert "skipped: catch_up:" in text
     assert 'schedule="*/5 * * * *"' in (root / FOLDER / "pipeline.py").read_text()
 
+    # --output: the result in a file of its own, whatever the file prints.
+    noisy = ORDERS.replace(
+        "from brokoli import", 'print("hello from the pipeline")\nfrom brokoli import'
+    )
+    (root / FOLDER / "pipeline.py").write_text(noisy)
+    result = tmp_path_factory.mktemp("out") / "result.json"
+    code = run_cli(
+        monkeypatch, "propose", FOLDER, "--changes", str(changes), "--output", str(result)
+    )
+    assert code == 0
+    assert json.loads(result.read_text())["applied"][0]["field"] == "schedule"
+
     changes.write_text("{}")
     assert run_cli(monkeypatch, "propose", FOLDER, "--changes", str(changes)) == 1
 

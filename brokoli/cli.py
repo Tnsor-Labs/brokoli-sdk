@@ -1038,6 +1038,10 @@ def propose_cmd(args: argparse.Namespace) -> int:
     if args.write and proposal.changed:
         (Path(root) / args.folder / "pipeline.py").write_text(proposal.source)
     path = f"{args.folder}/pipeline.py"
+    if args.output:
+        # A file of its own: whatever the pipeline's code prints while it
+        # is imported cannot get mixed into the result.
+        Path(args.output).write_text(json.dumps(proposal.to_dict(path), indent=2))
     if args.json:
         print(json.dumps(proposal.to_dict(path), indent=2))
         return 0
@@ -1402,6 +1406,7 @@ def main() -> None:
     rp_.add_argument("--project", default=None, help="Project root (default: found from here)")
     rp_.add_argument("--write", action="store_true", help="Write the result into pipeline.py")
     rp_.add_argument("--json", action="store_true", help="Machine-readable output")
+    rp_.add_argument("--output", default=None, help="Also write the JSON result to this file")
     rp_.set_defaults(func=propose_cmd)
 
     # plan

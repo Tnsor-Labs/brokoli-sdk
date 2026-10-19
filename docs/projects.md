@@ -293,7 +293,9 @@ calls on the same line.
 Options: `--write` writes the result into `pipeline.py` (without it the
 file is not touched and the diff is printed); `--json` prints `changed`,
 `applied`, `skipped` (each with its `reason`), the new `source` and the
-`diff`; `--project` names the project root when not run from inside it.
+`diff`; `--output <file>` also writes that JSON to a file (whatever the pipeline
+prints while it is imported stays out of it); `--project` names the project
+root when not run from inside it.
 `propose` writes no bytecode into the project. It exits 1 only when the
 file cannot be worked on at all: it does not compile, defines more than one
 pipeline, or is outside the project.
