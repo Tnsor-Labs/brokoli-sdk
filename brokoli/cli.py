@@ -1012,6 +1012,49 @@ def _print_problems(title: str, problems: Sequence[str]) -> None:
         print(f"  - {problem}")
 
 
+def propose_cmd(args: argparse.Namespace) -> int:
+    """Write changes to a pipeline's definition into its pipeline.py."""
+    from brokoli.projects import find_project_root
+    from brokoli.propose import Change, ProposeError, propose
+
+    root = Path(args.project) if args.project else find_project_root(".")
+    if root is None:
+        _print_problems("Nothing was proposed:", ["no project here (brokoli.yaml); pass --project"])
+        return 1
+    try:
+        raw = sys.stdin.read() if args.changes == "-" else Path(args.changes).read_text()
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            raise ValueError("the changes are a JSON list")
+        changes = [Change.from_dict(item) for item in data]
+    except (OSError, ValueError) as exc:
+        _print_problems("Nothing was proposed:", [f"reading the changes: {exc}"])
+        return 1
+    try:
+        proposal = propose(root, args.folder, changes)
+    except ProposeError as exc:
+        _print_problems("Nothing was proposed:", exc.problems)
+        return 1
+    if args.write and proposal.changed:
+        (Path(root) / args.folder / "pipeline.py").write_text(proposal.source)
+    path = f"{args.folder}/pipeline.py"
+    if args.output:
+        # A file of its own: whatever the pipeline's code prints while it
+        # is imported cannot get mixed into the result.
+        Path(args.output).write_text(json.dumps(proposal.to_dict(path), indent=2))
+    if args.json:
+        print(json.dumps(proposal.to_dict(path), indent=2))
+        return 0
+    if proposal.changed:
+        print(proposal.diff(path), end="")
+    else:
+        print("No change written.")
+    for change, reason in proposal.skipped:
+        where = f"node {change.node_id} " if change.node_id else ""
+        print(f"skipped: {where}{change.field}: {reason}")
+    return 0
+
+
 def init_cmd(args: argparse.Namespace) -> int:
     """Create a project."""
     from brokoli.projects import ProjectError
@@ -1351,6 +1394,20 @@ def main() -> None:
     npp.add_argument("--workspace", default=None, help="Workspace (needed when there are several)")
     npp.add_argument("--template", choices=["basic", "python"], default="basic")
     npp.set_defaults(func=new_pipeline_cmd)
+
+    # propose
+    rp_ = sub.add_parser(
+        "propose", help="Write changes to a pipeline's definition into its pipeline.py"
+    )
+    rp_.add_argument("folder", help="The pipeline's folder, relative to the project")
+    rp_.add_argument(
+        "--changes", required=True, help="JSON list of changes (a file, or - for stdin)"
+    )
+    rp_.add_argument("--project", default=None, help="Project root (default: found from here)")
+    rp_.add_argument("--write", action="store_true", help="Write the result into pipeline.py")
+    rp_.add_argument("--json", action="store_true", help="Machine-readable output")
+    rp_.add_argument("--output", default=None, help="Also write the JSON result to this file")
+    rp_.set_defaults(func=propose_cmd)
 
     # plan
     pp = sub.add_parser("plan", help="Compare the project with a server, workspace by workspace")

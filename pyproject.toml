@@ -33,10 +33,11 @@ Issues = "https://github.com/Tnsor-Labs/brokoli-sdk/issues"
 brokoli = "brokoli.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "jsonschema>=4.18", "ruff>=0.6", "mypy>=1.8", "build>=1.0"]
+dev = ["pytest>=7.0", "libcst>=1.1", "jsonschema>=4.18", "ruff>=0.6", "mypy>=1.8", "build>=1.0"]
 watch = ["sodp-client>=0.2.2"]
 pandas = ["pandas>=1.5"]
 pyarrow = ["pyarrow>=12.0"]
+propose = ["libcst>=1.1"]
 
 [tool.setuptools.packages.find]
 include = ["brokoli*"]
