@@ -1000,6 +1000,43 @@ def auth_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def mcp_cmd(args: argparse.Namespace) -> int:
+    """Serve the server's MCP endpoint on stdio, for an agent client."""
+    from brokoli import mcp_bridge
+
+    server, auth = _resolve_target(args, "mcp")
+    if not auth:
+        print(
+            f"not signed in to {server}: run 'brokoli auth --server {server}', or set BROKOLI_TOKEN",
+            file=sys.stderr,
+        )
+        return 1
+    # Say who the agent will act as, on stderr: stdout is the protocol.
+    req = urllib.request.Request(server + "/api/auth/me", headers={"Authorization": auth})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 -- the configured server
+            me = json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            print(
+                f"not signed in to {server}: run 'brokoli auth --server {server}', or set BROKOLI_TOKEN",
+                file=sys.stderr,
+            )
+            return 1
+        me = {}
+    except OSError as exc:
+        print(f"could not reach {server}: {exc}", file=sys.stderr)
+        return 1
+    who = me.get("username") or "your account"
+    if me.get("kind") == "agent":
+        who = f"agent {who}" + (
+            f", on behalf of {me['on_behalf_of']}" if me.get("on_behalf_of") else ""
+        )
+    print(f"brokoli mcp: serving {server} as {who}", file=sys.stderr)
+    mcp_bridge.bridge(mcp_bridge.http_poster(server, auth, _cli_workspace), server)
+    return 0
+
+
 # ---------------------------------------------------------------- projects
 #
 # A project is a repository of pipelines described by a brokoli.yaml with
@@ -1293,6 +1330,18 @@ def main() -> None:
         "--no-browser", action="store_true", help="Print the link instead of opening a browser"
     )
     ap.set_defaults(func=auth_cmd)
+
+    # mcp
+    mp = sub.add_parser("mcp", help="Serve a Brokoli server to an AI agent client over MCP (stdio)")
+    mp.add_argument("--server", default=None, help="Brokoli server URL")
+    mp.add_argument("--env", default=None, help="Named environment from the project config")
+    mp.add_argument(
+        "--api-key",
+        default="",
+        help="Token to act with (default: BROKOLI_TOKEN, then 'brokoli auth')",
+    )
+    mp.add_argument("--workspace", default=None, help="Workspace to act in")
+    mp.set_defaults(func=mcp_cmd)
 
     # deploy
     dp = sub.add_parser("deploy", help="Deploy pipeline(s) to a Brokoli server")

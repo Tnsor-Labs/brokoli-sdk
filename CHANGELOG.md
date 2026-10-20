@@ -9,6 +9,13 @@ those are called out explicitly.
 
 ### Added
 
+- **`brokoli mcp`** relays a Brokoli server's MCP endpoint (`/api/mcp`) on
+  stdio, for agent clients that only start local processes. Each JSON-RPC
+  message goes to the server with the command's usual credentials
+  (`BROKOLI_TOKEN`, `--api-key`, a project environment, or `brokoli auth`);
+  a failed request is answered with a JSON-RPC error saying why (not
+  signed in, not permitted, unreachable). The tools are the server's.
+
 - **`brokoli propose`** writes changes to a pipeline's definition, in the
   IR's terms, into its `pipeline.py` and keeps the rest of the file as
   written: the pipeline's name, description, schedule, timezone and tags;
