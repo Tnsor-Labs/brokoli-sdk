@@ -9,6 +9,15 @@ those are called out explicitly.
 
 ### Added
 
+- **`brokoli propose`** writes changes to a pipeline's definition, in the
+  IR's terms, into its `pipeline.py` and keeps the rest of the file as
+  written: the pipeline's name, description, schedule, timezone and tags;
+  a node's name and settings; nodes added and removed; connections made
+  and dropped. Every change is checked by compiling the file again and
+  kept only when it compiles to exactly that change; anything else is
+  skipped with the reason. Needs `pip install 'brokoli[propose]'`. See
+  `docs/projects.md`.
+
 - **Projects.** A repository of pipelines with a `brokoli.yaml` that
   declares `version: 1`: one folder per workspace, one folder per
   pipeline (`workspaces/<workspace>/pipelines/<pipeline_id>/pipeline.py`),
