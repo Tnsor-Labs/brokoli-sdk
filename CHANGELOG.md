@@ -7,6 +7,8 @@ those are called out explicitly.
 
 ## Unreleased
 
+## 0.11.0 - 2026-10-20
+
 ### Added
 
 - **`brokoli mcp`** relays a Brokoli server's MCP endpoint (`/api/mcp`) on
