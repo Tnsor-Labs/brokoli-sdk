@@ -541,6 +541,34 @@ environments:
 environment's `workspace`. It is sent as `X-Workspace-ID`; a single-tenant
 server ignores it.
 
+### AI agents (MCP)
+
+A Brokoli server serves the [Model Context Protocol](https://modelcontextprotocol.io)
+at `/api/mcp`, so an AI agent can read pipelines, runs, logs and lineage,
+explain a failed run, validate a definition, and propose changes that a
+person applies. A client that connects to remote MCP servers points at
+`https://<server>/api/mcp` with a bearer token. A client that only starts
+local processes runs `brokoli mcp`, which relays the server's endpoint on
+stdio with the same credentials as every other command:
+
+```bash
+brokoli auth --server https://brokoli.example     # once, in the browser
+```
+
+```json
+{
+  "mcpServers": {
+    "brokoli": { "command": "brokoli", "args": ["mcp", "--server", "https://brokoli.example"] }
+  }
+}
+```
+
+`brokoli mcp` says on standard error whom it acts as (`serving
+https://brokoli.example as ada`); standard output carries only the
+protocol. The tools, and every check on what the caller may do, are the
+server's: give an agent a token of its own (an agent identity) rather than
+yours where the server has them.
+
 ## Programmatic client
 
 `Client` does from Python what the CLI does from a shell:
