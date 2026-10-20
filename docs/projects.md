@@ -242,6 +242,22 @@ The changes are a JSON list, in the IR's terms:
 ]
 ```
 
+and changes to the graph, a node added or removed and a connection made
+or dropped:
+
+```json
+[
+  {"target": "node", "node_id": "save_orders", "field": "node",
+   "value": {"type": "sink_file", "name": "Save orders", "config": {"path": "/out/orders.csv"}}},
+  {"target": "edge", "field": "edge", "value": {"from": "clean_1", "to": "save_orders"}},
+  {"target": "edge", "field": "edge", "value": {"from": "clean_1", "to": "audit_1"}, "remove": true},
+  {"target": "node", "node_id": "ready_1", "field": "node", "remove": true}
+]
+```
+
+Changes are made in the order given, so drop a node's connections before
+the node, and add a node before connecting it.
+
 ```bash
 brokoli propose workspaces/analytics/pipelines/orders --changes changes.json
 ```
@@ -271,6 +287,10 @@ What it can change:
 | `name`, `description`, `schedule`, `schedule_timezone`, `tags` of the pipeline | the `Pipeline(...)` argument (the name is its first argument); an empty `schedule_timezone` removes the argument |
 | a node's `name` | the call's first argument, plus `node_key="<its id>"` so the node keeps its id (ids come from names otherwise, and a new id would be a new node to the platform) |
 | a node's `config.<key>` | the call's `<key>=` argument: replaced, added after the last argument in the call's own layout, or removed with `"remove": true` |
+| a node added (`"field": "node"`) | a statement of its own in the `with Pipeline(...)` block, after the last node made there: `save_orders = sink_file("Save orders", path=..., node_key="save_orders")`, named after the node, one argument per line when it does not fit on one; the function is added to `from brokoli import ...`. Each config key is the argument of that name (`max_retries` is `retries`) |
+| a node removed (`"remove": true`) | its statement removed, with the comments right above it, when nothing else in the file still uses its name |
+| a connection made (`"target": "edge"`) | `a >> b` at the end of the block. A node made by a bare call is first given a name: `d = sink_file(...)` |
+| a connection dropped | taken out of the `a >> b >> c` that makes it: `a >> b >> c` without `a -> b` is `b >> c`; `a >> [b, c]` without `a -> c` is `a >> b` |
 
 **Every change is verified.** After each edit the file is compiled again,
 and the change is kept only when the new IR is the old IR with exactly that
@@ -283,7 +303,11 @@ reason, and the file is left without it:
 | the node is made in a loop, a comprehension, or a helper that makes several nodes | `[sink_db(f"Copy {i}", ...) for i in (1, 2)]` |
 | the node is made inside a function | `def audit(name): return transform(...)` |
 | the argument does not exist | a config key the node function does not take |
-| the field is not supported yet | `catch_up`, a node's inputs; adding or removing nodes and edges |
+| the field is not supported yet | `catch_up`, a node's inputs or type |
+| the node type has no function to add it with | `condition`, `union`, `task`, `sql_generate`: add them by hand |
+| a node added does not compile to the settings asked for | a setting its function does not take, or writes differently. A setting the function writes out at its default (`format="csv"`) and an empty setting it leaves out (`rules=[]`) are the same node |
+| a node or connection is not made plainly | a node made by a call inside another expression, a connection made by `input=` or inside `a >> [b, c] >> d`, a branch of an If / Else node |
+| a node removed is still used | `clean` still appears in `clean >> checked`: drop the connection first |
 
 Nodes are found by where they were made: the file is compiled with a
 recorder noting the call that created each node, so the right call is

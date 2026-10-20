@@ -1,9 +1,10 @@
 """Write changes to a pipeline's definition back into its pipeline.py.
 
 ``propose`` takes changes expressed in the pipeline's IR (a schedule, a
-node's name, one of a node's config values) and edits the ``pipeline.py``
-that compiles to it, keeping everything else in the file as written:
-comments, formatting, imports, helpers.
+node's name, one of a node's config values, a node added or removed, a
+connection made or dropped) and edits the ``pipeline.py`` that compiles to
+it, keeping everything else in the file as written: comments, formatting,
+imports, helpers.
 
 Every change is verified, not assumed. After each edit the file is compiled
 again, and the change is kept only if the new IR is exactly the old IR with
@@ -25,7 +26,9 @@ import copy
 import difflib
 import importlib.util
 import json
+import keyword
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +39,35 @@ PIPELINE_FILE = "pipeline.py"
 # The Pipeline(...) arguments a change may set, by IR field. "name" is also
 # the first positional argument.
 PIPELINE_FIELDS = ("name", "description", "schedule", "schedule_timezone", "tags")
+
+# The function that makes a node of each type, for a node a change adds.
+# Types without one here (condition, union, task, ...) are added by hand.
+NODE_FACTORIES = {
+    "source_db": "source_db",
+    "source_api": "source_api",
+    "source_file": "source_file",
+    "transform": "transform",
+    "project": "project",
+    "filter": "filter_rows",
+    "aggregate": "aggregate",
+    "join": "join",
+    "quality_check": "quality_check",
+    "contract_gate": "contract_gate",
+    "code": "code",
+    "bash": "bash",
+    "sink_db": "sink_db",
+    "sink_file": "sink_file",
+    "sink_api": "sink_api",
+    "migrate": "migrate",
+    "dbt": "dbt",
+    "notify": "notify",
+    "wait": "wait",
+}
+
+# Config keys whose factory argument has another name.
+_CONFIG_ARGUMENTS = {"max_retries": "retries"}
+
+_NODE_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 class ProposeError(Exception):
@@ -51,10 +83,16 @@ class ProposeError(Exception):
 class Change:
     """One change, in the IR's terms.
 
-    ``target`` is ``"pipeline"`` or ``"node"``. For a node, ``node_id`` is
-    the IR node id. ``field`` is a pipeline field (``"schedule"``), a node's
-    ``"name"``, or ``"config.<key>"`` for one top-level config value.
-    ``remove`` drops a config value instead of setting it.
+    ``target`` is ``"pipeline"``, ``"node"`` or ``"edge"``. For a node,
+    ``node_id`` is the IR node id. ``field`` is a pipeline field
+    (``"schedule"``), a node's ``"name"``, or ``"config.<key>"`` for one
+    top-level config value; ``remove`` drops a config value instead of
+    setting it.
+
+    Field ``"node"`` adds the node, ``value`` being ``{"type", "name",
+    "config"}``, or with ``remove`` removes it. An ``"edge"`` change (field
+    ``"edge"``) makes the connection ``value`` = ``{"from", "to"}``, or with
+    ``remove`` drops it.
     """
 
     target: str
@@ -79,7 +117,7 @@ class Change:
             out["node_id"] = self.node_id
         if self.remove:
             out["remove"] = True
-        else:
+        if not self.remove or self.target == "edge":
             out["value"] = self.value
         return out
 
@@ -388,6 +426,429 @@ def _edit(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[
     return _replace(module, call, updated), ""
 
 
+# ------------------------------------------------------------- the graph
+#
+# A node added is a statement of its own, `name = factory("Name", ...,
+# node_key="id")`, in the pipeline's `with` block; a connection made is a
+# `a >> b` at the end of it. A node removed is its statement, removed when
+# nothing else in the file uses it; a connection dropped is taken out of
+# the `a >> b >> c` that makes it. Anything less plain is left for a person.
+
+
+def _pipeline_block(module: Any, locator: "_Locator") -> tuple[Optional[Any], str]:
+    """The `with Pipeline(...)` statement, written at the top of the file."""
+    cst = _libcst()
+    call = locator.pipeline_call()
+    if call is None:
+        return None, "the file has no single Pipeline(...) call"
+    for stmt in module.body:
+        if isinstance(stmt, cst.With) and any(item.item is call for item in stmt.items):
+            return stmt, ""
+    return None, "the pipeline is not a `with Pipeline(...)` block at the top of the file"
+
+
+def _names_in(module: Any) -> set[str]:
+    """Every name the file uses: read, assigned, imported or defined."""
+    import ast
+
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(module.code)):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.alias):
+            found.add((node.asname or node.name).split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.add(node.name)
+        elif isinstance(node, ast.arg):
+            found.add(node.arg)
+    return found
+
+
+def _used(module: Any, name: str) -> bool:
+    """Whether the file reads or assigns *name* anywhere."""
+    import ast
+
+    return any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(ast.parse(module.code)))
+
+
+def _fresh_name(base: str, taken: set[str]) -> str:
+    name = re.sub(r"[^0-9a-zA-Z_]", "_", base).strip("_").lower() or "node"
+    if name[0].isdigit():
+        name = "n_" + name
+    candidate, i = name, 1
+    while (
+        candidate in taken or keyword.iskeyword(candidate) or candidate in NODE_FACTORIES.values()
+    ):
+        i += 1
+        candidate = f"{name}_{i}"
+    return candidate
+
+
+def _node_statements(
+    block: Any, locator: "_Locator", sites: dict[str, Any]
+) -> dict[str, tuple[int, Optional[str]]]:
+    """Each node made by a statement of its own in the block: its index
+    there, and the name it is assigned to (None for a bare call)."""
+    cst = _libcst()
+    out: dict[str, tuple[int, Optional[str]]] = {}
+    for node_id, site in sites.items():
+        if site is None or site[4] != "<module>":
+            continue
+        if sum(1 for s in sites.values() if s == site) > 1:
+            continue
+        call = locator.node_call(site[0], site[1], site[2], site[3], site[5])
+        if call is None:
+            continue
+        for i, stmt in enumerate(block.body.body):
+            if not isinstance(stmt, cst.SimpleStatementLine) or len(stmt.body) != 1:
+                continue
+            small = stmt.body[0]
+            if isinstance(small, cst.Expr) and small.value is call:
+                out[node_id] = (i, None)
+            elif (
+                isinstance(small, cst.Assign)
+                and small.value is call
+                and len(small.targets) == 1
+                and isinstance(small.targets[0].target, cst.Name)
+            ):
+                out[node_id] = (i, small.targets[0].target.value)
+    return out
+
+
+def _with_body(module: Any, block: Any, body: list[Any]) -> Any:
+    return module.deep_replace(block, block.with_changes(body=block.body.with_changes(body=body)))
+
+
+def _statement(text: str) -> Any:
+    return _libcst().parse_statement(text)
+
+
+def _imported(module: Any, name: str) -> tuple[Optional[Any], str]:
+    """The module with *name* imported from brokoli, or None and why not."""
+    cst = _libcst()
+    for stmt in module.body:
+        if not isinstance(stmt, cst.SimpleStatementLine):
+            continue
+        for small in stmt.body:
+            if not (
+                isinstance(small, cst.ImportFrom)
+                and small.relative == ()
+                and isinstance(small.module, cst.Name)
+                and small.module.value == "brokoli"
+            ):
+                continue
+            if isinstance(small.names, cst.ImportStar):
+                return module, ""
+            names = list(small.names)
+            if any(a.asname is None and getattr(a.name, "value", None) == name for a in names):
+                return module, ""
+            # Kept in order, as an import sorter would.
+            plain = [getattr(a.name, "value", "") for a in names]
+            at = len([n for n in plain if n.lower() < name.lower()])
+            comma = cst.Comma(whitespace_after=cst.SimpleWhitespace(" "))
+            alias = cst.ImportAlias(name=cst.Name(name), comma=comma)
+            if at == len(names):
+                last = names[-1]
+                alias = alias.with_changes(comma=last.comma)
+                names[-1] = last.with_changes(comma=comma)
+            names.insert(at, alias)
+            return module.deep_replace(small, small.with_changes(names=names)), ""
+    return (
+        None,
+        f"pipeline.py does not import from brokoli with `from brokoli import ...`; import {name} by hand",
+    )
+
+
+def _call_text(factory: str, args: list[str], width: int) -> str:
+    """The call on one line when it fits in *width*, else one argument per
+    line. Continuation lines are relative to the statement: LibCST indents
+    them with the block."""
+    one_line = f"{factory}({', '.join(args)})"
+    if len(one_line) <= width:
+        return one_line
+    return f"{factory}(\n" + "".join(f"    {a},\n" for a in args) + ")"
+
+
+def _add_node(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[Any], str]:
+    spec = change.value if isinstance(change.value, dict) else {}
+    node_type, name = spec.get("type"), spec.get("name")
+    config = spec.get("config") or {}
+    if not isinstance(name, str) or not isinstance(config, dict):
+        return None, "a node added needs a type, a name and a config"
+    factory = NODE_FACTORIES.get(str(node_type))
+    if factory is None:
+        return None, f"adding a {node_type} node is not supported yet; add it in pipeline.py"
+    node_id = change.node_id
+    if not node_id or not _NODE_KEY.fullmatch(node_id):
+        return None, f"{node_id!r} is not a node id pipeline.py can keep"
+    if change.node_id in sites:
+        return None, f"node {change.node_id!r} is already in the pipeline"
+    args = [_literal(name)]
+    for key, value in config.items():
+        if key.startswith("_"):
+            continue  # the SDK's own annotations, not settings
+        argument = _CONFIG_ARGUMENTS.get(str(key), str(key))
+        if not argument.isidentifier() or keyword.iskeyword(argument):
+            return None, f"the setting {key!r} cannot be written as an argument"
+        args.append(f"{argument}={_literal(value)}")
+    args.append(f"node_key={_literal(change.node_id)}")
+
+    locator = _Locator(module)
+    module = locator.wrapper.module
+    block, why = _pipeline_block(module, locator)
+    if block is None:
+        return None, why
+    made = _node_statements(block, locator, sites)
+    indent = block.body.indent if block.body.indent is not None else module.default_indent
+    var = _fresh_name(name if name.isascii() else node_id, _names_in(module))
+    width = 88 - len(indent) - len(var) - 3
+    stmt = _statement(f"{var} = {_call_text(factory, args, width)}\n")
+    body = list(block.body.body)
+    # After the last node made in the block, before the connections.
+    at = max((i for i, _ in made.values()), default=len(body) - 1) + 1
+    body.insert(at, stmt)
+    module = _with_body(module, block, body)
+    return _imported(module, factory)
+
+
+def _remove_node(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[Any], str]:
+    locator = _Locator(module)
+    module = locator.wrapper.module
+    block, why = _pipeline_block(module, locator)
+    if block is None:
+        return None, why
+    made = _node_statements(block, locator, sites)
+    if change.node_id not in made:
+        return (
+            None,
+            "the node is not made by a statement of its own in the pipeline block; remove it in pipeline.py",
+        )
+    index, var = made[change.node_id]
+    body = list(block.body.body)
+    # Its comments go with it: a comment above a statement is about it.
+    body.pop(index)
+    module = _with_body(module, block, body)
+    if var is not None and _used(module, var):
+        return None, f"{var} is still used elsewhere in pipeline.py; remove the node by hand"
+    return module, ""
+
+
+def _chain(expr: Any) -> Optional[list[Any]]:
+    """`a >> b >> [c, d]` as its parts, or None when it is not a chain."""
+    cst = _libcst()
+    parts: list[Any] = []
+    while isinstance(expr, cst.BinaryOperation) and isinstance(expr.operator, cst.RightShift):
+        parts.insert(0, expr.right)
+        expr = expr.left
+    if not parts:
+        return None
+    parts.insert(0, expr)
+    return parts
+
+
+def _part_names(part: Any) -> Optional[list[str]]:
+    cst = _libcst()
+    if isinstance(part, cst.Name):
+        return [part.value]
+    if isinstance(part, (cst.List, cst.Tuple)) and all(
+        isinstance(e.value, cst.Name) for e in part.elements
+    ):
+        return [e.value.value for e in part.elements]
+    return None
+
+
+def _part_text(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else "[" + ", ".join(names) + "]"
+
+
+def _add_edge(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[Any], str]:
+    edge = change.value if isinstance(change.value, dict) else {}
+    if edge.get("condition") is not None:
+        return (
+            None,
+            "connecting a branch of an If / Else node is not supported yet; connect it in pipeline.py",
+        )
+    source, target = edge.get("from"), edge.get("to")
+    locator = _Locator(module)
+    module = locator.wrapper.module
+    block, why = _pipeline_block(module, locator)
+    if block is None:
+        return None, why
+    made = _node_statements(block, locator, sites)
+    body = list(block.body.body)
+    taken = _names_in(module)
+    names = []
+    for node_id in (source, target):
+        if node_id not in made:
+            return (
+                None,
+                f"node {node_id!r} is not made by a statement of its own in the pipeline block; connect it in pipeline.py",
+            )
+        index, var = made[node_id]
+        if var is None:
+            # A bare call: give it a name to connect it by.
+            var = _fresh_name(re.sub(r"_\d+$", "", str(node_id)), taken)
+            taken.add(var)
+            stmt = body[index]
+            call = stmt.body[0].value
+            assign = _libcst().Assign(
+                targets=[_libcst().AssignTarget(target=_libcst().Name(var))], value=call
+            )
+            body[index] = stmt.with_changes(body=[assign])
+            made[node_id] = (index, var)
+        names.append(var)
+    body.append(_statement(f"{names[0]} >> {names[1]}\n"))
+    return _with_body(module, block, body), ""
+
+
+def _remove_edge(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[Any], str]:
+    cst = _libcst()
+    edge = change.value if isinstance(change.value, dict) else {}
+    source, target = edge.get("from"), edge.get("to")
+    locator = _Locator(module)
+    module = locator.wrapper.module
+    block, why = _pipeline_block(module, locator)
+    if block is None:
+        return None, why
+    made = _node_statements(block, locator, sites)
+    var_of = {node_id: var for node_id, (_, var) in made.items() if var}
+    src, dst = var_of.get(str(source)), var_of.get(str(target))
+    plain = "the connection is not made by an `a >> b` of named nodes in the pipeline block; remove it in pipeline.py"
+    if src is None or dst is None:
+        return None, plain
+    body = list(block.body.body)
+    for i, stmt in enumerate(body):
+        if not isinstance(stmt, cst.SimpleStatementLine) or len(stmt.body) != 1:
+            continue
+        small = stmt.body[0]
+        parts = _chain(small.value) if isinstance(small, cst.Expr) else None
+        if parts is None:
+            continue
+        maybe = [_part_names(p) for p in parts]
+        names = [n for n in maybe if n is not None]
+        if len(names) != len(maybe):
+            continue
+        link = next(
+            (k for k in range(len(names) - 1) if src in names[k] and dst in names[k + 1]), None
+        )
+        if link is None:
+            continue
+        left, right = names[link], names[link + 1]
+        if len(left) == 1 and len(right) == 1:
+            pieces = [names[: link + 1], names[link + 1 :]]
+        elif len(left) == 1 and link + 1 == len(names) - 1:
+            pieces = [names[:-1] + [[n for n in right if n != dst]]]
+        else:
+            return (
+                None,
+                "the connection is part of a fan-out several nodes share; remove it in pipeline.py",
+            )
+        lines = [" >> ".join(_part_text(p) for p in piece) for piece in pieces if len(piece) > 1]
+        new = [_statement(f"{line}\n") for line in lines]
+        if new:
+            new[0] = new[0].with_changes(leading_lines=stmt.leading_lines)
+        body[i : i + 1] = new
+        return _with_body(module, block, body), ""
+    return None, plain
+
+
+def _edit_graph(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[Any], str]:
+    if change.target == "edge":
+        return (_remove_edge if change.remove else _add_edge)(module, sites, change)
+    if change.remove:
+        if change.node_id not in sites:
+            return None, f"node {change.node_id!r} is not in the pipeline"
+        return _remove_node(module, sites, change)
+    return _add_node(module, sites, change)
+
+
+def _is_graph(change: Change) -> bool:
+    return change.target == "edge" or (change.target == "node" and change.field == "node")
+
+
+def _normal(ir: dict[str, Any]) -> dict[str, Any]:
+    """*ir* with its nodes and edges in a fixed order: where a statement
+    sits in the file decides their order, not what the pipeline is."""
+    out = dict(ir)
+    out["nodes"] = sorted(ir.get("nodes", []), key=lambda n: str(n.get("id")))
+    out["edges"] = sorted(
+        ir.get("edges", []),
+        key=lambda e: (str(e.get("from")), str(e.get("to")), str(e.get("condition"))),
+    )
+    return out
+
+
+def _settings(config: Any) -> dict[str, Any]:
+    return {k: v for k, v in (config or {}).items() if not str(k).startswith("_")}
+
+
+def _factory_defaults(node_type: str) -> dict[str, Any]:
+    """The defaults of the factory's arguments, by config key."""
+    import inspect
+
+    from brokoli import nodes
+
+    factory = getattr(nodes, NODE_FACTORIES.get(node_type, ""), None)
+    if factory is None:
+        return {}
+    by_argument = {v: k for k, v in _CONFIG_ARGUMENTS.items()}
+    out: dict[str, Any] = {}
+    for name, param in inspect.signature(factory).parameters.items():
+        if param.default is not inspect.Parameter.empty and param.default is not None:
+            out[by_argument.get(name, name)] = param.default
+    return out
+
+
+def _same_settings(compiled: dict[str, Any], asked: dict[str, Any], node_type: str) -> bool:
+    """Whether a node added compiles to the settings asked for. Two
+    differences say the same thing: a setting the SDK writes out at its
+    default (``response="dataset"``) that was not asked for, and an empty
+    setting asked for (``rules=[]``) that the SDK leaves out."""
+    defaults = _factory_defaults(node_type)
+    for key in set(compiled) | set(asked):
+        if key in compiled and key in asked:
+            if compiled[key] != asked[key]:
+                return False
+        elif key in asked:
+            if asked[key] not in ("", None, [], {}):
+                return False
+        elif key not in defaults or compiled[key] != defaults[key]:
+            return False
+    return True
+
+
+def _confirms(old: dict[str, Any], new: dict[str, Any], change: Change) -> bool:
+    """Whether *new* is *old* with the graph *change* made."""
+    old, new = _normal(old), _normal(new)
+    expected = copy.deepcopy(old)
+    if change.target == "edge":
+        edge = {"from": change.value.get("from"), "to": change.value.get("to")}
+        if change.remove:
+            expected["edges"] = [e for e in expected["edges"] if e != edge]
+        else:
+            expected["edges"] = _normal({"edges": expected["edges"] + [edge]})["edges"]
+        return new == expected
+    if change.remove:
+        expected["nodes"] = [n for n in expected["nodes"] if n.get("id") != change.node_id]
+        expected["edges"] = [
+            e for e in expected["edges"] if change.node_id not in (e.get("from"), e.get("to"))
+        ]
+        return new == expected
+    added = [n for n in new["nodes"] if n.get("id") == change.node_id]
+    if len(added) != 1:
+        return False
+    node = added[0]
+    if (node.get("type"), node.get("name")) != (change.value.get("type"), change.value.get("name")):
+        return False
+    if not _same_settings(
+        _settings(node.get("config")), _settings(change.value.get("config")), node["type"]
+    ):
+        return False
+    rest = dict(new)
+    rest["nodes"] = [n for n in new["nodes"] if n.get("id") != change.node_id]
+    return rest == expected
+
+
 # ------------------------------------------------------------- propose
 
 
@@ -409,7 +870,10 @@ def propose(root: "str | os.PathLike[str]", folder: str, changes: list[Change]) 
         module = cst.parse_module(original)
         for change in changes:
             try:
-                edited, why = _edit(module, sites, change)
+                if _is_graph(change):
+                    edited, why = _edit_graph(module, sites, change)
+                else:
+                    edited, why = _edit(module, sites, change)
             except (ValueError, cst.ParserSyntaxError) as exc:
                 edited, why = None, f"the value cannot be written: {exc}"
             if edited is None:
@@ -420,7 +884,11 @@ def propose(root: "str | os.PathLike[str]", folder: str, changes: list[Change]) 
             except ProposeError as exc:
                 proposal.skipped.append((change, "; ".join(exc.problems)))
                 continue
-            if new_ir != _expected(ir, change):
+            if _is_graph(change):
+                confirmed = _confirms(ir, new_ir, change)
+            else:
+                confirmed = new_ir == _expected(ir, change)
+            if not confirmed:
                 proposal.skipped.append(
                     (
                         change,
