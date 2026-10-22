@@ -17,6 +17,15 @@ Nodes are found by where they were made: the file is compiled with a
 recorder that notes the call that created each node, so the codemod edits
 that call and never guesses from names.
 
+A value built from a constant is changed where the constant is defined.
+``url=f"{SHOP_API}/products"`` asked to become
+``"https://shop.example.com/products"`` sets ``SHOP_API``, in pipeline.py or
+in the project module it is imported from, rather than writing the URL over
+the expression; the constant is where the mistake was, and other code that
+reads it stays in step. When that cannot be done exactly (the new value
+does not keep the expression's fixed text, or the constant feeds other
+values of this pipeline), the value is written in pipeline.py as before.
+
 Needs LibCST: ``pip install 'brokoli[propose]'``.
 """
 
@@ -100,6 +109,9 @@ class Change:
     value: Any = None
     node_id: Optional[str] = None
     remove: bool = False
+    # Set by propose when the change was made by setting a constant:
+    # {"path", "constant", "value", "also_used_in"}.
+    constant: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Change":
@@ -119,6 +131,8 @@ class Change:
             out["remove"] = True
         if not self.remove or self.target == "edge":
             out["value"] = self.value
+        if self.constant is not None:
+            out["constant"] = self.constant
         return out
 
 
@@ -130,27 +144,45 @@ class Proposal:
     source: str
     applied: list[Change] = field(default_factory=list)
     skipped: list[tuple[Change, str]] = field(default_factory=list)
+    # The other files a change was written into (the module a constant is
+    # defined in), by path from the project's root: (original, new).
+    others: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     @property
     def changed(self) -> bool:
-        return self.source != self.original
+        return self.source != self.original or any(a != b for a, b in self.others.values())
+
+    def files(self, path: str = PIPELINE_FILE) -> list[tuple[str, str, str]]:
+        """Each file the proposal changes: (path, original, new), the
+        modules a constant was set in first, pipeline.py (at *path*) last."""
+        out = [(p, a, b) for p, (a, b) in sorted(self.others.items()) if a != b]
+        if self.source != self.original:
+            out.append((path, self.original, self.source))
+        return out
 
     def diff(self, path: str = PIPELINE_FILE) -> str:
         return "".join(
-            difflib.unified_diff(
-                self.original.splitlines(keepends=True),
-                self.source.splitlines(keepends=True),
-                fromfile=f"a/{path}",
-                tofile=f"b/{path}",
+            "".join(
+                difflib.unified_diff(
+                    old.splitlines(keepends=True),
+                    new.splitlines(keepends=True),
+                    fromfile=f"a/{name}",
+                    tofile=f"b/{name}",
+                )
             )
+            for name, old, new in self.files(path)
         )
 
     def to_dict(self, path: str = PIPELINE_FILE) -> dict[str, Any]:
+        """``source`` is pipeline.py's text, changed or not; ``files`` is
+        every file the proposal changes, pipeline.py among them only when
+        it changed."""
         return {
             "changed": self.changed,
             "applied": [c.to_dict() for c in self.applied],
             "skipped": [{**c.to_dict(), "reason": r} for c, r in self.skipped],
             "source": self.source,
+            "files": [{"path": name, "source": new} for name, _, new in self.files(path)],
             "diff": self.diff(path),
         }
 
@@ -185,6 +217,10 @@ def _compile(path: Path, text: str, root: Path) -> tuple[dict[str, Any], dict[st
         cached.unlink()
     prior_dont_write = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
+    # The project's own modules are imported afresh each time: a constant
+    # set in shared/endpoints.py must be read from the file as it is now,
+    # not from the module the previous compile left in sys.modules.
+    _forget_project_modules(root)
     recorder: dict[str, Any] = {"file": str(path), "sites": {}}
     token = _node_sites.set(recorder)
     root_str = str(root)
@@ -206,6 +242,27 @@ def _compile(path: Path, text: str, root: Path) -> tuple[dict[str, Any], dict[st
     for node in ir.get("nodes", []):
         node.pop("position", None)  # layout, not definition
     return ir, recorder["sites"]
+
+
+def _forget_project_modules(root: Path) -> None:
+    """Drop from sys.modules what the project's own files define: modules
+    loaded from under *root*, and any module by a name the project
+    provides (``shared`` when there is a ``shared/``), which another
+    project loaded in this process would otherwise answer for."""
+    for name, mod in list(sys.modules.items()):
+        top = name.split(".")[0]
+        if top == "brokoli":
+            continue
+        file = getattr(mod, "__file__", None)
+        if file and "site-packages" in file:
+            continue
+        provided = (root / top).is_dir() or (root / f"{top}.py").is_file()
+        try:
+            inside = file is not None and root in Path(file).resolve().parents
+        except (OSError, ValueError):
+            inside = False
+        if provided or inside:
+            del sys.modules[name]
 
 
 # ------------------------------------------------------------- the edits
@@ -424,6 +481,217 @@ def _edit(module: Any, sites: dict[str, Any], change: Change) -> tuple[Optional[
     else:
         return None, f"changing a node's {change.field} is not supported yet"
     return _replace(module, call, updated), ""
+
+
+# ------------------------------------------------------------- constants
+#
+# A value written as an expression over one constant -- the constant itself,
+# an f-string around it, or strings added to it -- is changed by setting the
+# constant, when the new value keeps the expression's fixed text. The
+# constant must be a plain string assigned at the top of pipeline.py, or of
+# the project module pipeline.py imports it from by name. The compile that
+# confirms every change then decides: a constant that is not what the
+# pipeline read, or that feeds anything else in this pipeline, changes
+# something other than what was asked, and the value is written in
+# pipeline.py instead.
+
+# Folders never searched for other readers of a constant.
+_NOT_PROJECT = {".git", ".venv", "venv", "node_modules", "__pycache__", "site-packages"}
+
+# Files searched, at most, for other readers of a constant.
+_MAX_SCANNED = 2000
+
+
+def _argument(call: Any, keyword: str, positional: Optional[int] = None) -> Optional[Any]:
+    """The expression *call* passes as *keyword*, or None."""
+    for arg in call.args:
+        if arg.keyword is not None and arg.keyword.value == keyword:
+            return arg.value
+    if positional is not None:
+        plain = [a for a in call.args if a.keyword is None and a.star == ""]
+        if len(plain) > positional:
+            return plain[positional].value
+    return None
+
+
+def _pieces(expr: Any) -> Optional[list[Any]]:
+    """An expression as its fixed text and the names it reads, in order:
+    ``f"{BASE}/products"`` is ``[Name("BASE"), "/products"]``. None for
+    anything else (a call, an attribute, a subscript, ...)."""
+    import ast
+
+    if isinstance(expr, ast.Name):
+        return [expr]
+    if isinstance(expr, ast.Constant):
+        return [expr.value] if isinstance(expr.value, str) else None
+    if isinstance(expr, ast.JoinedStr):
+        out: list[Any] = []
+        for part in expr.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                out.append(part.value)
+            elif isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name):
+                # A conversion or a format spec is caught by the compile.
+                out.append(part.value)
+            else:
+                return None
+        return out
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        left, right = _pieces(expr.left), _pieces(expr.right)
+        return None if left is None or right is None else left + right
+    return None
+
+
+def _string_assignment(module: Any, name: str) -> Optional[Any]:
+    """The string of the last top-level ``NAME = "text"`` (or ``NAME: str =
+    "text"``) in *module*, the value the module ends up with when nothing
+    else rebinds it; the compile that follows the edit checks that."""
+    cst = _libcst()
+    found = None
+    for stmt in module.body:
+        if not isinstance(stmt, cst.SimpleStatementLine) or len(stmt.body) != 1:
+            continue
+        small = stmt.body[0]
+        if isinstance(small, cst.Assign) and len(small.targets) == 1:
+            target, value = small.targets[0].target, small.value
+        elif isinstance(small, cst.AnnAssign) and small.value is not None:
+            target, value = small.target, small.value
+        else:
+            continue
+        if isinstance(target, cst.Name) and target.value == name:
+            found = value if isinstance(value, cst.SimpleString) else None
+    return found
+
+
+def _string_like(original: Any, value: str) -> str:
+    """*value* as a literal quoted the way *original* is. A raw string
+    escaped this way says something else, which the compile refuses."""
+    body = json.dumps(value, ensure_ascii=False)[1:-1]
+    if original.quote == "'":
+        body = body.replace('\\"', '"').replace("'", "\\'")
+    return f"{original.prefix}{original.quote}{body}{original.quote}"
+
+
+def _imported_from(tree: Any, name: str, root: Path) -> Optional[tuple[Path, str, str]]:
+    """Where pipeline.py's *name* comes from, when it is ``from a.b import
+    X [as name]`` at the top of the file and a.b is a module of the project:
+    (its file, X, "a.b")."""
+    import ast
+
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.ImportFrom) or stmt.level or not stmt.module:
+            continue
+        for alias in stmt.names:
+            if (alias.asname or alias.name) != name:
+                continue
+            base = root.joinpath(*stmt.module.split("."))
+            for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+                try:
+                    resolved = candidate.resolve()
+                except (OSError, ValueError):
+                    continue
+                if root in resolved.parents and resolved.is_file():
+                    return resolved, alias.name, stmt.module
+    return None
+
+
+def _readers(root: Path, module: str, name: str, skip: set[Path]) -> list[str]:
+    """The project's other files that import *name* from *module*: what
+    else a change to the constant reaches."""
+    import ast
+
+    out: list[str] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _NOT_PROJECT and not d.startswith("."))
+        for filename in sorted(filenames):
+            if not filename.endswith(".py"):
+                continue
+            path = Path(dirpath, filename).resolve()
+            if path in skip:
+                continue
+            scanned += 1
+            if scanned > _MAX_SCANNED:
+                return out
+            try:
+                tree = ast.parse(path.read_text())
+            except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+                continue
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and not node.level
+                    and node.module == module
+                    and any(a.name in (name, "*") for a in node.names)
+                ) or (isinstance(node, ast.Import) and any(a.name == module for a in node.names)):
+                    out.append(path.relative_to(root).as_posix())
+                    break
+    return out
+
+
+def _by_constant(
+    module: Any, sites: dict[str, Any], change: Change, root: Path, path: Path
+) -> Optional[tuple[Path, str, dict[str, Any]]]:
+    """The change made by setting a constant: (the file, its new text, what
+    was set). None when the value is not written over one constant whose
+    new value the change decides."""
+    import ast
+
+    cst = _libcst()
+    if change.remove or not isinstance(change.value, str):
+        return None
+    locator = _Locator(module)
+    module = locator.wrapper.module
+    if change.target == "pipeline" and change.field in PIPELINE_FIELDS:
+        call = locator.pipeline_call()
+        keyword, positional = change.field, 0 if change.field == "name" else None
+    elif change.target == "node" and change.field.startswith("config.") and change.node_id in sites:
+        site = sites[change.node_id]
+        if site is None or site[4] != "<module>" or sum(1 for s in sites.values() if s == site) > 1:
+            return None
+        call = locator.node_call(site[0], site[1], site[2], site[3], site[5])
+        keyword, positional = change.field[len("config.") :], None
+    else:
+        return None
+    expr = _argument(call, keyword, positional) if call is not None else None
+    if expr is None:
+        return None
+    try:
+        pieces = _pieces(ast.parse(module.code_for_node(expr).strip(), mode="eval").body)
+    except SyntaxError:
+        return None
+    if pieces is None:
+        return None
+    names = [i for i, p in enumerate(pieces) if isinstance(p, ast.Name)]
+    if len(names) != 1:
+        return None
+    prefix = "".join(pieces[: names[0]])
+    suffix = "".join(pieces[names[0] + 1 :])
+    name = pieces[names[0]].id
+    new = change.value
+    # A new value that does not keep the fixed text gives a constant the
+    # compile then refuses.
+    value = new[len(prefix) : len(new) - len(suffix)]
+
+    tree = ast.parse(module.code)
+    file, defined, dotted = path, name, ""
+    origin = _imported_from(tree, name, root)
+    if origin is not None:
+        file, defined, dotted = origin
+        target = cst.parse_module(file.read_text())
+    elif _string_assignment(module, name) is not None:
+        target = module
+    else:
+        return None
+    literal = _string_assignment(target, defined)
+    if literal is None or not isinstance(literal.evaluated_value, str):
+        return None
+    text = _string_like(literal, value)
+    edited = target.deep_replace(literal, cst.parse_expression(text))
+    rel = file.relative_to(root).as_posix()
+    written: dict[str, Any] = {"path": rel, "constant": defined, "value": value}
+    if dotted:
+        written["also_used_in"] = _readers(root, dotted, defined, {file, path})
+    return file, edited.code, written
 
 
 # ------------------------------------------------------------- the graph
@@ -865,10 +1133,31 @@ def propose(root: "str | os.PathLike[str]", folder: str, changes: list[Change]) 
         raise ProposeError([f"{folder}/{PIPELINE_FILE}: no such file"])
     original = path.read_text()
     proposal = Proposal(original=original, source=original)
+    # Other files written for a constant: their text before propose ran,
+    # put back however it ends.
+    touched: dict[Path, str] = {}
     try:
         ir, sites = _compile(path, original, root)
         module = cst.parse_module(original)
         for change in changes:
+            if not _is_graph(change):
+                try:
+                    found = _by_constant(module, sites, change, root, path)
+                except (ValueError, OSError, UnicodeDecodeError, cst.ParserSyntaxError):
+                    found = None
+                compiled = (
+                    _set_constant(path, root, module, change, ir, found, touched)
+                    if found is not None
+                    else None
+                )
+                if found is not None and compiled is not None:
+                    file, text, written = found
+                    if file == path:
+                        module = cst.parse_module(text)
+                    ir, sites = compiled
+                    change.constant = written
+                    proposal.applied.append(change)
+                    continue
             try:
                 if _is_graph(change):
                     edited, why = _edit_graph(module, sites, change)
@@ -899,6 +1188,49 @@ def propose(root: "str | os.PathLike[str]", folder: str, changes: list[Change]) 
             module, ir, sites = edited, new_ir, new_sites
             proposal.applied.append(change)
         proposal.source = module.code
+        for file, before in touched.items():
+            now = file.read_text()
+            if now != before:  # tried and put back: not part of the proposal
+                proposal.others[file.relative_to(root).as_posix()] = (before, now)
     finally:
         path.write_text(original)
+        for file, before in touched.items():
+            file.write_text(before)
     return proposal
+
+
+def _set_constant(
+    path: Path,
+    root: Path,
+    module: Any,
+    change: Change,
+    ir: dict[str, Any],
+    found: tuple[Path, str, dict[str, Any]],
+    touched: dict[Path, str],
+) -> Optional[tuple[dict[str, Any], dict[str, Any]]]:
+    """The compiled pipeline when setting the constant makes exactly
+    *change*, else None. The file is left set when it does, as it was when
+    it does not."""
+    file, text, _ = found
+    source = text if file == path else module.code
+    prior = None
+    if file != path:
+        prior = file.read_text()
+        touched.setdefault(file, prior)
+        _write_module(file, text)
+    try:
+        new_ir, new_sites = _compile(path, source, root)
+    except ProposeError:
+        new_ir, new_sites = None, {}
+    if new_ir is not None and new_ir == _expected(ir, change):
+        return new_ir, new_sites
+    if prior is not None:
+        _write_module(file, prior)
+    return None
+
+
+def _write_module(file: Path, text: str) -> None:
+    file.write_text(text)
+    cached = Path(importlib.util.cache_from_source(str(file)))
+    if cached.exists():
+        cached.unlink()
