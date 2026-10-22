@@ -1072,9 +1072,11 @@ def propose_cmd(args: argparse.Namespace) -> int:
     except ProposeError as exc:
         _print_problems("Nothing was proposed:", exc.problems)
         return 1
-    if args.write and proposal.changed:
-        (Path(root) / args.folder / "pipeline.py").write_text(proposal.source)
     path = f"{args.folder}/pipeline.py"
+    if args.write:
+        # pipeline.py and any module a constant was set in.
+        for name, _, text in proposal.files(path):
+            (Path(root) / name).write_text(text)
     if args.output:
         # A file of its own: whatever the pipeline's code prints while it
         # is imported cannot get mixed into the result.

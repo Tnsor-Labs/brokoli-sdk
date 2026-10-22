@@ -292,6 +292,56 @@ What it can change:
 | a connection made (`"target": "edge"`) | `a >> b` at the end of the block. A node made by a bare call is first given a name: `d = sink_file(...)` |
 | a connection dropped | taken out of the `a >> b >> c` that makes it: `a >> b >> c` without `a -> b` is `b >> c`; `a >> [b, c]` without `a -> c` is `a >> b` |
 
+**A value built from a constant is changed where the constant is
+defined.** Projects keep shared values in modules of their own:
+
+```python
+# shared/endpoints.py
+SHOP_API = "https://dummyjson.com/v1"
+```
+
+```python
+# workspaces/shop/pipelines/products/pipeline.py
+from shared.endpoints import SHOP_API
+
+with Pipeline("Products", pipeline_id="products") as p:
+    products = source_api("Fetch products", url=f"{SHOP_API}/products", records="products")
+```
+
+Asked to make the URL `https://dummyjson.com/products`, `propose` does not
+write that URL over `f"{SHOP_API}/products"`. It sets the constant, since
+the constant is where the value is wrong:
+
+```diff
+--- a/shared/endpoints.py
++++ b/shared/endpoints.py
+@@ ...
+-SHOP_API = "https://dummyjson.com/v1"
++SHOP_API = "https://dummyjson.com"
+```
+
+`pipeline.py` is left as it was. This happens when all of these hold, and
+otherwise the value is written in `pipeline.py` as any other:
+
+- The argument is the constant itself, an f-string around it
+  (`f"{SHOP_API}/products"`), or strings added to it
+  (`SHOP_API + "/products"`), and reads exactly one name.
+- The new value keeps the expression's fixed text: `/products` is still
+  at the end, so the constant's new value is what comes before it.
+- The constant is a string assigned at the top of `pipeline.py`, or of the
+  project module `pipeline.py` imports it from by name
+  (`from shared.endpoints import SHOP_API`). Its new value is written in
+  the quotes it already uses.
+- The pipeline compiles to exactly the change asked for. A constant that
+  also feeds another node of this pipeline would change that node too, so
+  it is left alone.
+
+The change is reported with the constant it set: `"constant": {"path":
+"shared/endpoints.py", "constant": "SHOP_API", "value":
+"https://dummyjson.com", "also_used_in": [...]}`. `also_used_in` lists the
+project's other files that import the constant, which the change reaches
+as well: say so to whoever reviews it.
+
 **Every change is verified.** After each edit the file is compiled again,
 and the change is kept only when the new IR is the old IR with exactly that
 change made. A change that does not come out that way is skipped, with the
@@ -314,10 +364,12 @@ recorder noting the call that created each node, so the right call is
 edited even when two nodes have similar names, or a call contains other
 calls on the same line.
 
-Options: `--write` writes the result into `pipeline.py` (without it the
-file is not touched and the diff is printed); `--json` prints `changed`,
-`applied`, `skipped` (each with its `reason`), the new `source` and the
-`diff`; `--output <file>` also writes that JSON to a file (whatever the pipeline
+Options: `--write` writes the result into `pipeline.py`, and into any
+module a constant was set in (without it no file is touched and the diff
+of each file is printed); `--json` prints `changed`, `applied`, `skipped`
+(each with its `reason`), the new `source` of `pipeline.py`, `files` (each
+file the proposal changes, as `path` from the project root and `source`;
+`pipeline.py` is among them only when it changed) and the `diff`; `--output <file>` also writes that JSON to a file (whatever the pipeline
 prints while it is imported stays out of it); `--project` names the project
 root when not run from inside it.
 `propose` writes no bytecode into the project. It exits 1 only when the

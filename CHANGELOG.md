@@ -7,6 +7,28 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Changed
+
+- **`brokoli propose` changes a value built from a constant where the
+  constant is defined.** A URL written as `f"{SHOP_API}/products"`, asked
+  to become `https://dummyjson.com/products`, used to be overwritten with
+  the literal URL in `pipeline.py`, leaving the wrong `SHOP_API` in place
+  for everything else that reads it. It now sets `SHOP_API`, in
+  `pipeline.py` or in the project module it is imported from, when the new
+  value keeps the expression's fixed text and the pipeline compiles to
+  exactly that change; otherwise the value is written in `pipeline.py` as
+  before. The applied change says which constant it set, in which file,
+  and which other files import it. The JSON result gains `files`, every
+  file the proposal changes; `--write` writes each of them.
+
+### Fixed
+
+- **`brokoli propose` compiled against stale project modules.** Each
+  recompile reused the project modules the first compile had imported
+  (`shared.endpoints`, say), and the same name from another project loaded
+  earlier in the process. The project's own modules are now imported
+  afresh for every compile.
+
 ## 0.11.0 - 2026-10-20
 
 ### Added
