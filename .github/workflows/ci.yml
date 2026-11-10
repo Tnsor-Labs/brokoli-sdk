@@ -14,7 +14,10 @@ jobs:
   # Gate: the SDK must pass its suite on every supported Python.
   test:
     name: Test (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, whose Python toolcache has no
+    # 3.9, and the SDK still supports 3.9 (requires-python >=3.9). Move this
+    # back to ubuntu-latest when 3.9 is dropped from the matrix.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
