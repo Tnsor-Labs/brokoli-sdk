@@ -18,7 +18,9 @@ import pytest
 
 from brokoli.ir import canonical_json, canonical_number
 
-_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "ir_canonicalization", "rendering.json")
+_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "fixtures", "ir_canonicalization", "rendering.json"
+)
 
 with open(_FIXTURE, encoding="utf-8") as f:
     _CASES = json.load(f)["cases"]
@@ -32,7 +34,19 @@ def test_renders_each_core_vector(case):
 def test_renders_what_json_dumps_did_for_everything_but_floats():
     value = {
         "pipeline_id": "p",
-        "nodes": [{"id": "a", "config": {"n": 3, "flag": True, "none": None, "text": "café   \"q\"", "list": [], "map": {}}}],
+        "nodes": [
+            {
+                "id": "a",
+                "config": {
+                    "n": 3,
+                    "flag": True,
+                    "none": None,
+                    "text": 'café   "q"',
+                    "list": [],
+                    "map": {},
+                },
+            }
+        ],
         "edges": [{"from": "a", "to": "b"}],
         "big": 2**70,
         "neg": -12,

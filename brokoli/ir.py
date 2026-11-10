@@ -126,7 +126,9 @@ def _render(value: Any, level: int) -> str:
         if not value:
             return "{}"
         items = sorted(((_render_key(k), v) for k, v in value.items()), key=lambda item: item[0])
-        body = ",\n".join(f"{inner}{json.dumps(k, ensure_ascii=False)}: {_render(v, level + 1)}" for k, v in items)
+        body = ",\n".join(
+            f"{inner}{json.dumps(k, ensure_ascii=False)}: {_render(v, level + 1)}" for k, v in items
+        )
         return "{\n" + body + "\n" + _INDENT * level + "}"
     if isinstance(value, (list, tuple)):
         if not value:
