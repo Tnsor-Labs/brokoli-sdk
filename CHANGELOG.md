@@ -23,6 +23,17 @@ those are called out explicitly.
 
 ### Fixed
 
+- **The IR digest of a pipeline with a float matches the TypeScript SDK's.**
+  `canonical_json` used `json.dumps`, which writes some floats differently
+  from JavaScript and Go: `1e-05` for `0.00001`, `1.2345678901234568e+20`
+  for `123456789012345680000`, `5.0` for `5`. The same pipeline got a
+  different `brokoli digest` here than in the TypeScript SDK. Numbers are
+  now written as core's IR canonicalization spec requires (RFC 8785), and
+  the output is checked against core's cross-SDK rendering vectors.
+  **Digests change** for pipelines whose IR holds such a float, including
+  a whole-valued float, which is now written `5`. Everything else renders
+  exactly as before. (Tnsor-Labs/brokoli#982)
+
 - **`brokoli propose` compiled against stale project modules.** Each
   recompile reused the project modules the first compile had imported
   (`shared.endpoints`, say), and the same name from another project loaded
