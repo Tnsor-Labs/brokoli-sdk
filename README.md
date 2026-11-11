@@ -370,7 +370,8 @@ parameter, never pasted into the SQL text.
 
 Not to be confused with `@map`, which applies a function to each row
 inside one node: `Map` runs the whole node once per row, as its own
-instance. A `@task(package="bundle")` cannot map yet.
+instance. A `@task(package="bundle")` maps too, on servers that advertise
+`node-map`.
 
 `brokoli deploy` refuses a pipeline that maps unless the server lists
 `node-map` in `/api/capabilities`, and refuses a `map` on a node type the

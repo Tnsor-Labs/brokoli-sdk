@@ -138,16 +138,6 @@ class TestRefusals:
             with pytest.raises(PipelineError, match="brokoli.Map"):
                 code("C", input=customers, script="pass", map={"over": customers})
 
-    def test_a_bundled_task_cannot_map_yet(self):
-        # The server runs a mapped code node from its script; a bundle
-        # would deploy and then fail at run time.
-        with Pipeline("m", pipeline_id="m"):
-            bundled = task(package="bundle")(_score)
-            customers = source_db("Customers", query="SELECT id FROM c", conn_id="shop")
-            with pytest.raises(PipelineError, match="package='bundle'"):
-                bundled(customers, map=Map(over=customers))
-
-
 def _serve(monkeypatch, payload):
     class _Resp:
         def read(self):

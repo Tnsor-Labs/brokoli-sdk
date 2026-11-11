@@ -246,6 +246,26 @@ class TestPipelineWiring:
             task("Enrich", package="bundle")(mod.enrich)()
         return pl
 
+    def test_a_bundled_task_maps(self, tmp_path, monkeypatch):
+        # The server runs each item of a mapped bundle code node through the
+        # bundle (core #1019); it used to save one and fail every run, so
+        # this SDK refused map= on a bundled task.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mod.py").write_text("def enrich(rows):\n    return rows\n")
+        mod = _load_module("mod", tmp_path)
+        from brokoli import Map, Pipeline, source_db, task
+
+        with Pipeline("b", pipeline_id="b2") as pl:
+            customers = source_db("Customers", query="SELECT id FROM c", conn_id="shop")
+            enriched = task("Enrich", package="bundle")(mod.enrich)(
+                customers, map=Map(over=customers, key="id")
+            )
+        node = next(n for n in pl.to_json()["nodes"] if n["id"] == enriched.node_id)
+        assert node["config"]["map"] == {"over": customers.node_id, "key": "id"}
+        assert node["config"]["task_bundle"]["digest"].startswith("sha256:")
+        assert "script" not in node["config"]
+
     def test_bundle_via_task_decorator(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         pl = self._pipeline(tmp_path)

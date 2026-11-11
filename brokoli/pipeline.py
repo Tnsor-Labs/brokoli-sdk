@@ -1267,11 +1267,6 @@ class _TaskWrapper:
         if not inputs and node_key is None and map is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
-        if map is not None and self._package == "bundle":
-            raise PipelineError(
-                f"@task {self._name!r}: map= cannot be used with package='bundle' yet; "
-                "the server runs a mapped code node from its script, not from a bundle"
-            )
 
         if self._package == "bundle":
             # ADR-031: package the task's project and reference it by
