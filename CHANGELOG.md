@@ -7,6 +7,20 @@ those are called out explicitly.
 
 ## Unreleased
 
+### Added
+
+- **`map=Map(...)`: run a node once per item.** `code()`, `source_db()`,
+  `source_api()` and a `@task` call take `map=Map(over=..., key=...,
+  max_items=..., max_parallel=..., on_item_failure=...)`, compiled to the
+  node's `map` block (ADR-050): the node runs once per row of `over`, in
+  parallel, each row its own item with its own status. `over` may be a
+  dict of collections to zip. The edge from each collection is added for
+  you. Bad settings are refused when the `Map` is written. Deploy refuses
+  a pipeline that maps unless the server advertises `node-map`, and
+  refuses a `map` on a type outside the server's `map_node_types`: a
+  server from before mapping ignores the block and runs the node once over
+  everything. A `@task(package="bundle")` cannot map yet.
+
 ### Changed
 
 - **`brokoli propose` changes a value built from a constant where the

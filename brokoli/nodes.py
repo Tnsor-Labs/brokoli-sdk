@@ -7,6 +7,7 @@ import json
 from typing import Optional, Any, TypeVar, Mapping
 
 from brokoli.exceptions import ContextError, PipelineError
+from brokoli.mapping import Map, prepare_map
 from brokoli.pagination import PaginationStrategy
 from brokoli.resources import ResourceRef
 from brokoli.parsing import parse_quality_rule
@@ -125,6 +126,7 @@ def _register_node(
     *inputs: NodeRef,
     ref_cls: type[_RefT] = NodeRef,  # type: ignore[assignment]
     node_key: Optional[str] = None,
+    map: Optional[Map] = None,
 ) -> _RefT:
     """Register a node in the current pipeline and connect inputs.
 
@@ -138,6 +140,8 @@ def _register_node(
             ``ArtifactRef``, ``DatasetRef``, ``CollectionRef``). Defaults
             to plain ``NodeRef`` for node kinds where none of the typed
             refs cleanly apply.
+        map: Run the node once per item of an upstream collection
+            (ADR-050); see :class:`brokoli.Map`.
 
     Returns:
         A ``ref_cls`` instance pointing to the newly registered node.
@@ -147,12 +151,15 @@ def _register_node(
     """
     pipeline = _current_pipeline()
     pipeline._validate_refs(list(inputs))
+    map_refs = prepare_map(pipeline, config, map)
     node_id = pipeline._allocate_node_id(name, node_key)
     pipeline._add_node(node_id, node_type, name, config)
 
     for inp in inputs:
         if isinstance(inp, NodeRef):
             pipeline._add_edge(inp.node_id, node_id)
+    for ref in map_refs:
+        pipeline._add_edge(ref.node_id, node_id)
 
     return ref_cls(node_id, pipeline)
 
@@ -187,6 +194,7 @@ def source_db(
     node_key: Optional[str] = None,
     schema: Any = UNSET,
     pool: Any = UNSET,
+    map: Optional[Map] = None,
 ) -> DatasetRef:
     """Database source -- query Postgres, MySQL, or SQLite.
 
@@ -209,7 +217,7 @@ def source_db(
     optional["pool"] = pool
 
     config = _build_config({"query": query}, optional)
-    return _register_node("source_db", name, config, ref_cls=DatasetRef, node_key=node_key)
+    return _register_node("source_db", name, config, ref_cls=DatasetRef, node_key=node_key, map=map)
 
 
 def source_api(
@@ -234,6 +242,7 @@ def source_api(
     profile: Any = UNSET,
     source_type: Any = UNSET,
     pool: Any = UNSET,
+    map: Optional[Map] = None,
 ) -> DatasetRef | ScalarRef | ArtifactRef:
     """REST API source -- fetch data from an HTTP endpoint.
 
@@ -360,7 +369,7 @@ def source_api(
     # ref_cls is picked at runtime from a dict, so mypy sees a union of
     # classes rather than the single type _register_node's TypeVar needs --
     # the union is exactly this function's own declared return type.
-    return _register_node("source_api", name, config, ref_cls=ref_cls, node_key=node_key)  # type: ignore[return-value]
+    return _register_node("source_api", name, config, ref_cls=ref_cls, node_key=node_key, map=map)  # type: ignore[return-value]
 
 
 def source_file(
@@ -823,6 +832,7 @@ def code(
     max_memory_mb: Any = UNSET,
     max_cpu_seconds: Any = UNSET,
     pool: Any = UNSET,
+    map: Optional[Map] = None,
 ) -> NodeRef:
     """Custom code node -- run Python (or other) scripts.
 
@@ -854,7 +864,7 @@ def code(
     optional["max_cpu_seconds"] = max_cpu_seconds
     optional["pool"] = pool
     config = _build_config({"language": language, "script": script}, optional)
-    return _register_node("code", name, config, *_input_args(input), node_key=node_key)
+    return _register_node("code", name, config, *_input_args(input), node_key=node_key, map=map)
 
 
 def bash(
