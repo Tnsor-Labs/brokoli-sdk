@@ -23,6 +23,17 @@ those are called out explicitly.
 
 ### Changed
 
+- **`.expand()` compiles to a `map` block.** It is now shorthand for
+  `map=Map(over={...})`, and takes `key="column"`, `max_items`,
+  `max_parallel` and `on_item_failure`. Two things change for an existing
+  `.expand()`: its items run in parallel on the local server (the server's
+  default, 4, unless `max_parallel` says otherwise) where the `expansion`
+  block ran them one at a time, and deploying it needs a server that
+  advertises `node-map` instead of `dynamic-expansion`. A `key=` callable
+  is ignored with a `DeprecationWarning`: the server only ever logged it
+  and identified items by position. Pipelines already deployed keep their
+  `expansion` block and run as before.
+
 - **`brokoli propose` changes a value built from a constant where the
   constant is defined.** A URL written as `f"{SHOP_API}/products"`, asked
   to become `https://dummyjson.com/products`, used to be overwritten with

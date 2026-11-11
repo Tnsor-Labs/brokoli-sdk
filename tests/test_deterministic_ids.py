@@ -265,11 +265,14 @@ def test_expand_node_key_is_separate_from_per_item_key_callable():
         def parse(rows):
             return rows
 
-        expanded = parse.expand(key=item_key, node_key="parse-expanded", file=files)
+        with pytest.warns(DeprecationWarning, match="ignored"):
+            expanded = parse.expand(key=item_key, node_key="parse-expanded", file=files)
 
     node = pipeline._nodes[expanded.node_id]
     assert expanded.node_id == "parse-expanded"
-    assert node["config"]["expansion"]["key"]["name"] == "item_key"
+    # The callable was never run by the server; it is dropped, and items
+    # are identified by position.
+    assert "key" not in node["config"]["map"]
 
 
 def test_expand_preserves_node_key_as_a_task_parameter_name():
@@ -287,7 +290,7 @@ def test_expand_preserves_node_key_as_a_task_parameter_name():
 
     node = pipeline._nodes[expanded.node_id]
     assert expanded.node_id == "decorator-default"
-    assert node["config"]["expansion"]["over"] == {
+    assert node["config"]["map"]["over"] == {
         "node_key": first.node_id,
         "other": second.node_id,
     }
@@ -305,12 +308,11 @@ def test_expand_string_node_key_remains_logical_and_key_remains_per_item():
         def parse(rows):
             return rows
 
-        expanded = parse.expand(key=item_key, node_key="logical-expand", item=files)
+        expanded = parse.expand(key="id", node_key="logical-expand", item=files)
 
-    expansion = pipeline._nodes[expanded.node_id]["config"]["expansion"]
+    block = pipeline._nodes[expanded.node_id]["config"]["map"]
     assert expanded.node_id == "logical-expand"
-    assert expansion["over"] == {"item": files.node_id}
-    assert expansion["key"]["name"] == "item_key"
+    assert block == {"over": {"item": files.node_id}, "key": "id"}
 
 
 def test_cross_pipeline_node_production_fails_before_allocation():

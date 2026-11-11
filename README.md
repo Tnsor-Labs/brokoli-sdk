@@ -379,49 +379,33 @@ would ignore the block and run the node once over everything.
 
 #### `.expand()` — dynamic fan-out
 
-The older form of per-item fan-out, for `@task` only. It compiles to an
-`expansion` block, which the server runs one item at a time on the local
-server, identified by position and stopping at the first failure. Prefer
-`map=Map(...)`, which runs items in parallel, takes a `key` column and a
-failure policy, and works on more node types.
-
-`a >> [b, c]` fans a node out to a fixed, Python-source-literal list of
-destinations. `.expand()` does the same thing driven by *runtime* data —
-one dynamic task instance per item of an upstream `CollectionRef` —
-compiling to a **single** IR node with an `expansion` policy block, not N
-static nodes:
+`parse.expand(file=files)` is shorthand for calling the task with
+`map=Map(over={"file": files})`: one item per row of `files`, several
+keyword collections zipped item by item. It takes the same settings,
+`key="column"`, `max_items`, `max_parallel` and `on_item_failure`, and
+returns a `CollectionRef` of the combined per-item outputs.
 
 ```python
 @task("Parse File")
 def parse(rows):
     ...
 
-# `files` is a CollectionRef (e.g. from a future paginated/listing source)
-parsed = parse.expand(
-    file=files,
-    key=lambda f: f["path"],       # per-item expansion identity
-    node_key="parse-files",       # identity of the logical expand node
-)
+parsed = parse.expand(file=files, key="path", max_parallel=8, node_key="parse-files")
 ```
 
-`key=` is optional and gives each dynamic instance a stable identity
-across re-runs. It's never executed locally or turned into a runnable
-script — only a name/description reference is recorded; the real per-item
-keying happens server-side once backend support for dynamic instances
-exists. `.expand()` returns a `CollectionRef` (the dynamic collection of
-per-instance outputs) — chain `.collect(mode="union")` on it to merge
-results back into one dataset.
-
-`key=` and `node_key=` are distinct: `key=` derives each runtime item's
-expansion identity, while `node_key=` identifies the single logical node in
-the compiled graph.
+`key=` names an item column; `node_key=` is the logical node's identity in
+the compiled graph. Until this release `.expand()` compiled to an
+`expansion` block, which servers still run as they did: one item at a
+time on the local server, by position, stopping at the first failure. It
+now compiles to `map`, so items run in parallel (the server's default,
+unless `max_parallel` says otherwise) and the server must advertise
+`node-map`. A `key=` callable, which no server ever ran, is ignored with a
+`DeprecationWarning`.
 
 For backward compatibility, a task parameter literally named `node_key`
 still works: `parse.expand(node_key=files, other=metadata)` treats a
 `CollectionRef` value as an expansion input and uses the decorator/default
-logical identity. A string value, such as
-`parse.expand(node_key="parse-files", file=files)`, is the logical node ID.
-The per-item `key=callable` behavior is unchanged.
+logical identity.
 
 #### `union()` / `.collect(mode="union")` — combine into one dataset
 

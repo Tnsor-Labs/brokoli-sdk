@@ -1337,45 +1337,46 @@ class _TaskWrapper:
 
     def expand(
         self,
-        key: Optional[Callable] = None,
+        key: Optional[str | Callable] = None,
         node_key: Optional[str | "CollectionRef"] = None,
+        *,
+        max_items: Optional[int] = None,
+        max_parallel: Optional[int] = None,
+        on_item_failure: Optional[str] = None,
         **kwargs: "CollectionRef",
     ) -> "CollectionRef":
-        """Fan this task out into one dynamic instance per item of an
-        upstream collection, compiling to a *single* IR node carrying an
-        ``expansion`` policy block -- not N static nodes -- driven by
-        data whose size isn't known until the pipeline runs.
+        """Run this task once per item of an upstream collection, as one
+        IR node with a ``map`` block (ADR-050): the same thing as calling
+        the task with ``map=Map(over={param: collection, ...})``.
 
-        Mirrors, in IR form, what ``a >> [b, c]`` does at authoring time
-        for a Python list literal known up front, except the fan-out
-        factor here is determined at run time by an upstream
-        :class:`CollectionRef`.
+        ``parsed = parse.expand(file=files)`` runs ``parse`` once per row
+        of ``files``; each run's ``rows`` holds that one row. Several
+        keyword collections are zipped item by item.
 
         Args:
-            key: Optional callable used to derive a stable per-item
-                instance identity (so re-runs don't spawn duplicate
-                instances for the same item). Not executed locally or
-                serialized as runnable code -- only a name/description
-                reference is recorded (see :func:`_func_ref`); the actual
-                per-item keying happens server-side once backend support
-                for dynamic instances exists.
+            key: The item column whose value identifies each item (see
+                :class:`brokoli.Map`). A callable is accepted for
+                compatibility and ignored, with a ``DeprecationWarning``:
+                the server never ran it.
             node_key: Logical node identity when passed a string. For
                 backward compatibility, a CollectionRef passed here is
                 treated as the expansion input named ``node_key``.
+            max_items, max_parallel, on_item_failure: As on
+                :class:`brokoli.Map`.
             **kwargs: Maps a task parameter name to the upstream
-                :class:`CollectionRef` driving expansion over that
-                parameter, e.g. ``parsed = parse.expand(file=files)``.
+                :class:`CollectionRef` driving expansion over it.
 
         Returns:
-            A :class:`CollectionRef` representing the dynamic collection
-            of per-instance outputs. Chain ``.collect(mode="union")`` to
-            merge them back into a single dataset.
+            A :class:`CollectionRef` of the per-item outputs, which the
+            node already combines; ``.collect(mode="union")`` still works.
 
-        Note:
-            SDK API surface and IR compilation only -- there is no
-            backend support yet for actually scheduling dynamic per-item
-            task instances or executing this expansion (brokoli-sdk#2).
+        This compiled to an ``expansion`` block before; servers still run
+        that block, one item at a time locally. The ``map`` block runs
+        items in parallel (the server's default, unless ``max_parallel``
+        says otherwise), and needs a server that advertises ``node-map``.
         """
+        import warnings
+
         logical_node_key: Optional[str]
         if isinstance(node_key, CollectionRef):
             kwargs["node_key"] = node_key
@@ -1401,26 +1402,38 @@ class _TaskWrapper:
                 )
         self._pipeline._validate_refs(list(kwargs.values()))
 
+        key_column: Optional[str] = None
+        if callable(key):
+            warnings.warn(
+                "expand(key=<callable>) is ignored: the server never ran it, and "
+                "identified items by position. Pass the name of an item column, "
+                "key='path', to identify items by its value.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        elif key is not None:
+            key_column = key
+        spec = Map(
+            over=dict(kwargs),
+            key=key_column,
+            max_items=max_items,
+            max_parallel=max_parallel,
+            on_item_failure=on_item_failure,
+        )
+
         func_source, package_meta = _package_task_source(self._func, self._package)
         call_script = TASK_WRAPPER_TEMPLATE.format(
             func_source=func_source,
             func_name=self._func.__name__,
         )
-
-        expansion: dict[str, Any] = {
-            "over": {param: ref.node_id for param, ref in kwargs.items()},
-        }
-        if key is not None:
-            expansion["key"] = _func_ref(key)
-
         config: dict[str, Any] = {
             "language": "python",
             "script": call_script,
             **self._config,
-            "expansion": expansion,
         }
         if package_meta is not None:
             config["package"] = package_meta
+        map_refs = prepare_map(self._pipeline, config, spec)
 
         node_id = self._pipeline._allocate_node_id(
             self._name,
@@ -1433,7 +1446,7 @@ class _TaskWrapper:
             config,
             capabilities=["compute", "dynamic-expansion", "collection-output"],
         )
-        for ref in kwargs.values():
+        for ref in map_refs:
             self._pipeline._add_edge(ref.node_id, node_id)
 
         return CollectionRef(node_id, self._pipeline)
