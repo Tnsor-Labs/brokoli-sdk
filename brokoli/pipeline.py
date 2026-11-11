@@ -1446,8 +1446,8 @@ class _TaskWrapper:
             config,
             capabilities=["compute", "dynamic-expansion", "collection-output"],
         )
-        for ref in map_refs:
-            self._pipeline._add_edge(ref.node_id, node_id)
+        for map_ref in map_refs:
+            self._pipeline._add_edge(map_ref.node_id, node_id)
 
         return CollectionRef(node_id, self._pipeline)
 
