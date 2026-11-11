@@ -19,7 +19,8 @@ those are called out explicitly.
   a pipeline that maps unless the server advertises `node-map`, and
   refuses a `map` on a type outside the server's `map_node_types`: a
   server from before mapping ignores the block and runs the node once over
-  everything. A `@task(package="bundle")` cannot map yet.
+  everything. A `@task(package="bundle")` maps too: each item runs through
+  the bundle.
 
 ### Changed
 
