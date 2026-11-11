@@ -125,7 +125,7 @@ class TestTypedRefsReturned:
 
 
 class TestExpand:
-    def test_expand_compiles_to_single_node_with_expansion_policy(self):
+    def test_expand_compiles_to_single_node_with_a_map_block(self):
         with Pipeline("test") as p:
             files = CollectionRef(
                 source_api("List Files", url="https://x", response="dataset").node_id, p
@@ -147,13 +147,16 @@ class TestExpand:
         assert expand_node["type"] == "code"
         assert "dynamic-expansion" in expand_node["capabilities"]
         assert "collection-output" in expand_node["capabilities"]
-        assert expand_node["config"]["expansion"]["over"] == {"file": files.node_id}
-        assert "key" not in expand_node["config"]["expansion"]
+        # The map block (ADR-050), not the old expansion block.
+        assert expand_node["config"]["map"] == {"over": {"file": files.node_id}}
+        assert "expansion" not in expand_node["config"]
 
         # Edge from the collection into the expand node.
         assert {"from": files.node_id, "to": expand_node["id"]} in data["edges"]
 
-    def test_expand_with_key_serializes_reference_not_executable_code(self):
+    def test_expand_with_a_key_callable_warns_and_drops_it(self):
+        # The server never ran a key callable (it logged a warning and used
+        # positions), so it is not carried into the map block.
         with Pipeline("test") as p:
             files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
 
@@ -165,14 +168,48 @@ class TestExpand:
             def parse(rows):
                 return rows
 
-            parse.expand(file=files, key=stable_key)
+            with pytest.warns(DeprecationWarning, match="key='path'"):
+                parse.expand(file=files, key=stable_key)
 
         node = p.to_json()["nodes"][1]
-        expansion = node["config"]["expansion"]
-        assert expansion["key"]["name"] == "stable_key"
-        assert "path" in expansion["key"]["doc"]
+        assert node["config"]["map"] == {"over": {"file": files.node_id}}
         # The key function is never turned into a runnable script.
         assert "stable_key(item)" not in node["config"]["script"]
+
+    def test_expand_takes_map_settings(self):
+        with Pipeline("test") as p:
+            files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
+
+            @task("Parse")
+            def parse(rows):
+                return rows
+
+            parse.expand(
+                file=files, key="path", max_items=50, max_parallel=1, on_item_failure="skip"
+            )
+
+        assert p.to_json()["nodes"][1]["config"]["map"] == {
+            "over": {"file": files.node_id},
+            "key": "path",
+            "max_items": 50,
+            "max_parallel": 1,
+            "on_item_failure": "skip",
+        }
+
+    def test_expand_requires_node_map_on_deploy(self):
+        from brokoli.compatibility import required_execution_features
+
+        with Pipeline("test") as p:
+            files = CollectionRef(source_api("List Files", url="https://x").node_id, p)
+
+            @task("Parse")
+            def parse(rows):
+                return rows
+
+            parse.expand(file=files)
+
+        required = required_execution_features(p.to_json())
+        assert "node-map" in required and "dynamic-expansion" not in required
 
     def test_expand_requires_at_least_one_kwarg(self):
         with Pipeline("test") as p:
