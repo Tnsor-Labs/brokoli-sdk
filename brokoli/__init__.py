@@ -10,6 +10,7 @@ from brokoli.pipeline import (
     CollectionRef,
 )
 from brokoli.taskbundle import TaskBundle
+from brokoli.mapping import Map
 from brokoli.decorators import (
     task,
     condition,
@@ -142,6 +143,7 @@ __all__ = [
     "EnvVar",
     # Decorators
     "task",
+    "Map",
     "condition",
     "source",
     "sink",

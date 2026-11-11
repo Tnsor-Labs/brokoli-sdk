@@ -298,12 +298,9 @@ source >> [branch_a, branch_b] >> merge >> output
 
 ### Typed References & Dynamic Expansion
 
-> **Scope note:** everything in this section is SDK API surface and IR
-> compilation only. There's no backend support yet for actually
-> scheduling dynamic per-item task instances, combining dataset
-> manifests, or running partition transforms — the primitives below let
-> you author and validate the IR shape today; execution is
-> physical-planner work that hasn't landed yet.
+> **What runs today:** `map=Map(...)`, `.expand()` and `union()` run on
+> the server. `DatasetRef.map()` / `.filter()` are IR only, with no backend
+> support yet (see the table at the end of this section).
 
 Node-building functions return one of five typed references (all are
 `NodeRef` subclasses, so `>>`, fan-out/fan-in, and everything else above
@@ -328,7 +325,65 @@ Sinks, `quality_check`, `code`, and `notify` keep returning a plain
 side-effect/gate or genuinely ambiguous (a `code` node can produce
 anything), so they aren't force-fit into one of the typed kinds.
 
+#### `map=Map(...)` — run a node once per item
+
+`code()`, `source_db()`, `source_api()` and a `@task` call take
+`map=Map(over=...)`. The node then runs once per row of `over` instead of
+once over its whole input: each row is its own item, with its own status,
+items run in parallel, and the node's output is every item's output
+combined. It compiles to the node's `map` block (ADR-050).
+
+```python
+from brokoli import Map, Pipeline, source_db, task
+
+with Pipeline("Orders per customer") as p:
+    customers = source_db("Customers", query="SELECT id, region FROM customers", conn_id="shop")
+
+    # One query per customer; ${item.id} is bound as a query parameter.
+    orders = source_db(
+        "Orders",
+        query="SELECT * FROM orders WHERE customer_id = ${item.id}",
+        conn_id="shop",
+        map=Map(over=customers, key="id", max_parallel=8),
+    )
+
+    @task("Score")
+    def score(rows):
+        customer = rows[0]  # one item per run
+        return [{"id": customer["id"], "score": len(customer["region"])}]
+
+    scored = score(customers, map=Map(over=customers, key="id", on_item_failure="continue"))
+```
+
+| `Map(...)` | Meaning |
+|---|---|
+| `over` | The node whose rows are the items. A dict of name to node zips several collections item by item: `Map(over={"file": files, "schema": schemas})`. |
+| `key` | The column that identifies each item, so retries and the run's item list use it. Values must be present and unique. Without it, items are numbered by position. |
+| `max_items` | The most items the node may fan out into; more fail the node. Server default 1000. |
+| `max_parallel` | How many items run at once. Server default 4. |
+| `on_item_failure` | `"fail"` (default) stops at the first failed item; `"continue"` runs all, then fails if any failed; `"skip"` leaves failed items out of the output. |
+
+In a mapped `code()` node or `@task`, `rows` holds exactly one row, the
+item. In a mapped `source_db()` query or `source_api()` request,
+`${item.column}` is replaced by the item's value: in SQL as a bound
+parameter, never pasted into the SQL text.
+
+Not to be confused with `@map`, which applies a function to each row
+inside one node: `Map` runs the whole node once per row, as its own
+instance. A `@task(package="bundle")` cannot map yet.
+
+`brokoli deploy` refuses a pipeline that maps unless the server lists
+`node-map` in `/api/capabilities`, and refuses a `map` on a node type the
+server's `map_node_types` does not include: a server from before mapping
+would ignore the block and run the node once over everything.
+
 #### `.expand()` — dynamic fan-out
+
+The older form of per-item fan-out, for `@task` only. It compiles to an
+`expansion` block, which the server runs one item at a time on the local
+server, identified by position and stopping at the first failure. Prefer
+`map=Map(...)`, which runs items in parallel, takes a `key` column and a
+failure policy, and works on more node types.
 
 `a >> [b, c]` fans a node out to a fixed, Python-source-literal list of
 destinations. `.expand()` does the same thing driven by *runtime* data —

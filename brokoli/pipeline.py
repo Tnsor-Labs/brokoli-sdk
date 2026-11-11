@@ -15,6 +15,7 @@ import textwrap
 from typing import Any, Callable, Iterable, Optional
 
 from brokoli.exceptions import PipelineError
+from brokoli.mapping import Map, prepare_map
 from brokoli.sentinel import UNSET
 
 # --- Layout constants ---
@@ -1254,11 +1255,23 @@ class _TaskWrapper:
             return self._interface_override
         return inferred.node_interface
 
-    def __call__(self, *inputs: NodeRef, node_key: Optional[str] = None) -> NodeRef:
-        """Register this task as a node with edges from *inputs*."""
-        if not inputs and node_key is None and self._auto_ref is not None:
+    def __call__(
+        self, *inputs: NodeRef, node_key: Optional[str] = None, map: "Optional[Map]" = None
+    ) -> NodeRef:
+        """Register this task as a node with edges from *inputs*.
+
+        ``map=Map(over=...)`` runs the task once per row of ``over``
+        (ADR-050): each run's ``rows`` holds that one row, and the node's
+        output is every row's result combined. See :class:`brokoli.Map`.
+        """
+        if not inputs and node_key is None and map is None and self._auto_ref is not None:
             return self._auto_ref
         _validate_wrapper_inputs(self._pipeline, inputs)
+        if map is not None and self._package == "bundle":
+            raise PipelineError(
+                f"@task {self._name!r}: map= cannot be used with package='bundle' yet; "
+                "the server runs a mapped code node from its script, not from a bundle"
+            )
 
         if self._package == "bundle":
             # ADR-031: package the task's project and reference it by
@@ -1294,6 +1307,7 @@ class _TaskWrapper:
             if package_meta is not None:
                 config["package"] = package_meta
 
+        map_refs = prepare_map(self._pipeline, config, map)
         node_id = self._pipeline._allocate_node_id(
             self._name, self._node_key if node_key is None else node_key
         )
@@ -1303,9 +1317,11 @@ class _TaskWrapper:
         for inp in inputs:
             if isinstance(inp, NodeRef):
                 self._pipeline._add_edge(inp.node_id, node_id)
+        for ref_in in map_refs:
+            self._pipeline._add_edge(ref_in.node_id, node_id)
 
         ref = NodeRef(node_id, self._pipeline)
-        if not inputs and node_key is None:
+        if not inputs and node_key is None and map is None:
             self._auto_ref = ref
         return ref
 

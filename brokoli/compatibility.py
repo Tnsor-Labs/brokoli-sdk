@@ -40,6 +40,10 @@ RUNTIME_EXISTENCE_FEATURES = frozenset(
         "task-runtime-v1",
         "task-bundle-v2",
         "task-ports-v1",
+        # ADR-050: a server old enough to omit the feature list predates
+        # mapping, and would ignore a `map` block and run the node once
+        # over its whole input.
+        "node-map",
     }
 )
 
@@ -66,6 +70,10 @@ class ServerCapabilities:
     # the field, which skips the check rather than failing it.
     node_types: tuple[str, ...] | None = None
     disabled_node_types: tuple[str, ...] | None = None
+    # The node types a `map` block may be put on (ADR-050). None when the
+    # server predates the field; such a server cannot advertise node-map
+    # either, so a mapped pipeline is refused for that instead.
+    map_node_types: tuple[str, ...] | None = None
 
 
 def _legacy_or_raise(message: str, allow_legacy_server: bool) -> None:
@@ -176,11 +184,21 @@ def fetch_server_capabilities(
             "'disabled_node_types' must be a list of non-empty strings."
         )
 
+    map_types = payload.get("map_node_types")
+    if map_types is not None and (
+        not isinstance(map_types, list) or any(not isinstance(t, str) or not t for t in map_types)
+    ):
+        raise CompatibilityError(
+            f"Server {server} returned an invalid /api/capabilities payload: "
+            "'map_node_types' must be a list of non-empty strings."
+        )
+
     return ServerCapabilities(
         tuple(versions),
         None if features is None else tuple(features),
         None if node_type_capabilities is None else tuple(node_type_capabilities),
         None if disabled is None and node_type_capabilities is None else tuple(disabled or ()),
+        None if map_types is None else tuple(map_types),
     )
 
 
@@ -196,12 +214,18 @@ def node_type_problems(payload: dict[str, Any], capabilities: ServerCapabilities
 
     A node type the server does not list is one it predates; one in its
     ``disabled_node_types`` is one its operator turned off. Either way the
-    server's validator refuses the pipeline, so deploy says so first.
+    server's validator refuses the pipeline, so deploy says so first. A
+    ``map`` block on a type outside the server's ``map_node_types`` is
+    refused the same way (ADR-050).
     """
     types: set[str] = set()
+    mapped: set[str] = set()
     for node in payload.get("nodes", []):
         if isinstance(node, dict) and isinstance(node.get("type"), str):
             types.add(node["type"])
+            config = node.get("config")
+            if isinstance(config, dict) and "map" in config:
+                mapped.add(node["type"])
     problems: list[str] = []
     disabled = set(capabilities.disabled_node_types or ())
     for node_type in sorted(types):
@@ -214,6 +238,13 @@ def node_type_problems(payload: dict[str, Any], capabilities: ServerCapabilities
         ):
             problems.append(
                 f"this server does not know the {node_type} node type; upgrade the server"
+            )
+    if capabilities.map_node_types is not None:
+        mappable = set(capabilities.map_node_types)
+        for node_type in sorted(mapped - mappable):
+            problems.append(
+                f"this server cannot map {node_type} nodes (it maps "
+                f"{', '.join(sorted(mappable)) or 'none'})"
             )
     return problems
 
@@ -252,6 +283,11 @@ def required_execution_features(payload: dict[str, Any]) -> set[str]:
             required.add("task-interface-v1")
         if "expansion" in config:
             required.add("dynamic-expansion")
+        if "map" in config:
+            # ADR-050: a server without node-map ignores the block and runs
+            # the node once over its whole input -- a green run and a wrong
+            # answer -- so this is a deploy refusal, never a warning.
+            required.add("node-map")
         if node_type == "task":
             # ADR-033: a "task" node is a whole separate execution path
             # (task-bundle/v2 payload dispatched over the
