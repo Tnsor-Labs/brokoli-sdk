@@ -49,6 +49,20 @@ those are called out explicitly.
 
 ### Fixed
 
+- **A task bundle over core's file-total or entry cap is refused at build
+  time, not on upload.** The packager checked only the gzipped archive size
+  (64 MiB), but core refuses an upload on two more caps its `taskbundlev2`
+  extractor applies: the regular files' sizes added up (64 MiB,
+  uncompressed) and the number of tar entries (10000, directories and
+  `manifest.json` included). A bundle is source text, which gzips well, so
+  its archive could sit under the archive cap while the files' total or the
+  entry count was over — passing `package_task_project` and failing only on
+  upload, with a core message that named neither the total nor what took the
+  space. All three caps are now checked where the bundle is built, and the
+  message names the cap, the bundle's size or entry count, and the five
+  largest files or the five directories with the most entries.
+  (Tnsor-Labs/brokoli-sdk#131)
+
 - **The IR digest of a pipeline with a float matches the TypeScript SDK's.**
   `canonical_json` used `json.dumps`, which writes some floats differently
   from JavaScript and Go: `1e-05` for `0.00001`, `1.2345678901234568e+20`

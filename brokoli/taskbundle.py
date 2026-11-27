@@ -45,6 +45,28 @@ FORMAT = "task-bundle/1"
 # server-side, so fail here -- before the network round-trip -- with the same cap.
 MAX_BYTES = 64 * 1024 * 1024  # 64 MiB
 
+# Core refuses an uploaded bundle on three caps, not one (pkg/taskbundlev2
+# Extract -> pkg/archiveextract): the gzipped archive (MAX_BYTES above), the
+# regular files' sizes added up, and the number of tar entries. The archive
+# cap alone is not enough here: a Python bundle is source text, which gzips
+# well, so its archive can sit far under MAX_BYTES while the files' total or
+# the entry count is over -- passing this packager and failing only on upload,
+# with a core message that names neither the total nor what took the space.
+#
+# MAX_TOTAL_BYTES mirrors core's taskbundle.MaxArchiveBytes used as
+# archiveextract's MaxTotalBytes (the regular-file bodies summed: manifest.json
+# and the project files, uncompressed, directories counting zero).
+MAX_TOTAL_BYTES = 64 * 1024 * 1024  # 64 MiB
+# MAX_ENTRIES mirrors core's taskbundle.MaxArchiveEntries: the tar entries
+# Extract walks -- directories, manifest.json and the files. Core refuses an
+# archive with more than this (directories included).
+MAX_ENTRIES = 10_000
+
+_MIB = 1024 * 1024
+# How many of the largest files / busiest directories a cap message names.
+_LISTED = 5
+_TOP_LEVEL = "the top level"
+
 # The generated entry module every task bundle carries; its source imports
 # the author module and runs the task function with the wrapper contract's
 # rows/output_data globals.
@@ -160,6 +182,77 @@ def assemble(files: dict[str, str], manifest: dict[str, Any]) -> bytes:
                 body = files[p].encode("utf-8")
                 tf.addfile(_tar_entry(p, body), io.BytesIO(body))
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Upload caps (core pkg/taskbundlev2 Extract): refuse here what core would
+# refuse on upload, so the failure shows at build time naming what took the
+# space, not after the archive is sent. The entry count and the file total
+# are computed from the same structure assemble() writes.
+# ---------------------------------------------------------------------------
+
+
+def _mib(count: int) -> str:
+    return f"{count // _MIB} MiB" if count % _MIB == 0 else f"{count / _MIB:.1f} MiB"
+
+
+def _bytes(count: int) -> str:
+    return f"{count} bytes ({_mib(count)})"
+
+
+def _parent(path: str) -> str:
+    """The directory a tar entry sits in, named as the message shows it: the
+    directory with a trailing slash, or ``the top level`` for a root entry.
+    Directory entries have no trailing slash (as :func:`_empty_dir` returns
+    them), so their parent is one level up."""
+    slash = path.rfind("/")
+    return path[: slash + 1] if slash >= 0 else _TOP_LEVEL
+
+
+def _sized(files: dict[str, str], manifest_bytes: bytes) -> list[tuple[str, int]]:
+    """Every regular file in the archive with its byte size, as core sums them
+    for the total cap: manifest.json plus each project file, UTF-8 encoded."""
+    sized = [("manifest.json", len(manifest_bytes))]
+    sized += [(p, len(files[p].encode("utf-8"))) for p in sorted(files)]
+    return sized
+
+
+def _largest(sized: list[tuple[str, int]]) -> str:
+    top = sorted(sized, key=lambda s: (-s[1], s[0]))[:_LISTED]
+    return ", ".join(f"{path} ({size} bytes)" for path, size in top)
+
+
+def _most_entries(order: list[str], directories: list[str]) -> str:
+    counts: dict[str, int] = {}
+    for entry in ["manifest.json", *order, *directories]:
+        parent = _parent(entry)
+        counts[parent] = counts.get(parent, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_LISTED]
+    return ", ".join(f"{name} ({count})" for name, count in top)
+
+
+def _require_within_caps(files: dict[str, str], manifest_bytes: bytes) -> None:
+    """Refuse *files* (plus the manifest) if the bundle would be over core's
+    entry or file-total cap. Called before assembling the archive, so a bundle
+    core would reject on upload fails at build time instead. The archive-byte
+    cap is checked separately, once the archive's compressed size is known."""
+    order = sorted(files)
+    directories = _empty_dir(order + ["manifest.json"])
+    entries = len(directories) + 1 + len(files)  # dirs + manifest.json + files
+    if entries > MAX_ENTRIES:
+        raise BundleError(
+            f"task bundle would have {entries} entries, over core's cap of {MAX_ENTRIES} "
+            "(directories, manifest.json and files, as core counts them); the most are in "
+            f"{_most_entries(order, directories)}"
+        )
+    sized = _sized(files, manifest_bytes)
+    total = sum(size for _, size in sized)
+    if total > MAX_TOTAL_BYTES:
+        raise BundleError(
+            f"task bundle would hold {total} bytes of files ({_mib(total)}), over core's "
+            f"cap of {_bytes(MAX_TOTAL_BYTES)}; the largest are {_largest(sized)}; leave out "
+            "what the task does not need"
+        )
 
 
 @dataclass(frozen=True)
@@ -489,12 +582,15 @@ def package_task_project(
         "build_digest": _build_digest(),
         "language_runtime": language_runtime,
     }
+    manifest_bytes = _json_manifest(manifest)
+    _require_within_caps(files, manifest_bytes)
     archive_bytes = assemble(files, manifest)
     total = len(archive_bytes)
     if total > MAX_BYTES:
         raise BundleError(
-            f"task bundle would be {total} bytes, over the {MAX_BYTES}-byte cap "
-            "(ADR-031 Decision 6)"
+            f"task bundle would be {total} bytes ({_mib(total)}) compressed, over the "
+            f"{MAX_BYTES}-byte cap ({_mib(MAX_BYTES)}); the largest files are "
+            f"{_largest(_sized(files, manifest_bytes))} (ADR-031 Decision 6)"
         )
     digest = digest_bytes(archive_bytes)
     return TaskBundle(

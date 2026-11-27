@@ -20,6 +20,7 @@ import tempfile
 
 import pytest
 
+from brokoli import taskbundle
 from brokoli.compatibility import required_execution_features
 from brokoli.taskbundle import FORMAT, BundleError, digest_bytes, package_task_project
 from brokoli.validation import validate_pipeline
@@ -225,6 +226,88 @@ class TestPackageTaskProject:
         with pytest.raises(BundleError) as exc:
             _build("mod", project_root=str(tmp_path))
         assert "over the" in str(exc.value) and "-byte cap" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Upload caps: refuse at build time what core refuses on upload (#131).
+# Core enforces three caps in pkg/taskbundlev2 Extract -- the gzipped archive
+# (MAX_BYTES, test_size_cap above), the files' total and the entry count.
+# ---------------------------------------------------------------------------
+
+
+class TestBundleCaps:
+    CAP = 64 * 1024 * 1024
+
+    def test_entry_count_matches_the_written_tar(self, tmp_path):
+        # The cap formula (dirs + manifest + files) must equal the entries the
+        # assembled tar actually holds, because that is what core counts with
+        # tar.Next(). A nested package exercises the directory entries.
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mypkg").mkdir()
+        (tmp_path / "mypkg" / "__init__.py").write_text("")
+        (tmp_path / "mypkg" / "helpers.py").write_text("def double(x): return x * 2\n")
+        (tmp_path / "mypkg" / "tasks.py").write_text(
+            "from .helpers import double\n"
+            "def enrich(rows):\n"
+            "    return [{**r, 'v': r['v'] * double(2)} for r in rows]\n"
+        )
+        bundle = _build("mypkg.tasks", project_root=str(tmp_path))
+
+        with _archive_tar(bundle) as tf:
+            members = len(tf.getmembers())
+        order = sorted(bundle.files)
+        directories = taskbundle._empty_dir(order + ["manifest.json"])
+        assert len(directories) + 1 + len(bundle.files) == members
+
+    def test_entry_cap_refuses_one_over_naming_where_they_are(self):
+        # entries = dirs(3) + manifest(1) + files(n). n=9996 -> 10000 (the cap);
+        # n=9997 -> 10001 (one over). Empty-body files keep this cheap.
+        def proto(n):
+            return {f"com/example/proto/m{i}.py": "" for i in range(n)}
+
+        taskbundle._require_within_caps(proto(9996), b"x" * 100)  # at the cap: no raise
+        with pytest.raises(BundleError) as exc:
+            taskbundle._require_within_caps(proto(9997), b"x" * 100)
+        assert str(exc.value) == (
+            "task bundle would have 10001 entries, over core's cap of 10000 "
+            "(directories, manifest.json and files, as core counts them); the most are in "
+            "com/example/proto/ (9997), the top level (2), com/ (1), com/example/ (1)"
+        )
+
+    def test_file_total_cap_refuses_one_over_naming_the_largest(self):
+        manifest = b"x" * 100
+        big = "b" * (self.CAP - 100 - 10)  # manifest + app.py + big == the cap
+        at_cap = {"app.py": "a" * 10, "lib/big.py": big}
+        over = {"app.py": "a" * 11, "lib/big.py": big}
+
+        taskbundle._require_within_caps(at_cap, manifest)  # at the cap: no raise
+        with pytest.raises(BundleError) as exc:
+            taskbundle._require_within_caps(over, manifest)
+        assert str(exc.value) == (
+            "task bundle would hold 67108865 bytes of files (64.0 MiB), over core's cap of "
+            "67108864 bytes (64 MiB); the largest are lib/big.py (67108754 bytes), "
+            "manifest.json (100 bytes), app.py (11 bytes); leave out what the task does not need"
+        )
+
+    def test_package_task_project_enforces_the_entry_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("brokoli.taskbundle.MAX_ENTRIES", 2)
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mod.py").write_text("def enrich(rows):\n    return rows\n")
+        with pytest.raises(BundleError) as exc:
+            _build("mod", project_root=str(tmp_path))
+        # mod.py + entry.py + manifest.json, no directories -> 3 entries.
+        assert "would have 3 entries, over core's cap of 2" in str(exc.value)
+        assert "the top level (3)" in str(exc.value)
+
+    def test_package_task_project_enforces_the_file_total_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("brokoli.taskbundle.MAX_TOTAL_BYTES", 50)
+        (tmp_path / ".git").mkdir(exist_ok=True)
+        (tmp_path / "mod.py").write_text("def enrich(rows):\n    return rows\n")
+        with pytest.raises(BundleError) as exc:
+            _build("mod", project_root=str(tmp_path))
+        assert "bytes of files" in str(exc.value)
+        assert "over core's cap of 50 bytes" in str(exc.value)
+        assert "the largest are" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
