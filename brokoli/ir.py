@@ -58,28 +58,35 @@ def normalize_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
     if "webhook_token" in normalized:
         normalized["webhook_token"] = ""
 
+    def _normalize_node(node: Mapping[str, Any]) -> dict[str, Any]:
+        node_copy = dict(node)
+        node_copy.pop("position", None)
+        capabilities = node_copy.get("capabilities")
+        if (capabilities is None or capabilities == []) and isinstance(node_copy.get("type"), str):
+            # Imported lazily so pipeline serialization can use this module
+            # without creating a module import cycle.
+            from brokoli.pipeline import _capabilities_for
+
+            node_copy["capabilities"] = sorted(_capabilities_for(node_copy["type"]), key=_sort_key)
+        elif isinstance(capabilities, list):
+            node_copy["capabilities"] = sorted(capabilities, key=_sort_key)
+        # A group's inner subgraph (ADR-050 phase 2) is normalized the same
+        # way, recursively: inner nodes stripped of layout, capability-filled
+        # and id-sorted, so a group's inner layout never leaks into the
+        # semantic form and two SDKs render the same group identically.
+        inner = node_copy.get("nodes")
+        if isinstance(inner, list):
+            inner_nodes = [_normalize_node(n) for n in inner if isinstance(n, Mapping)]
+            inner_nodes.sort(key=lambda n: _mapping_sort_key(n, ("id",)))
+            node_copy["nodes"] = inner_nodes
+        return node_copy
+
     nodes = normalized.get("nodes")
     if isinstance(nodes, list):
-        for index, node in enumerate(nodes):
-            if not isinstance(node, Mapping):
-                continue
-            node_copy = dict(node)
-            node_copy.pop("position", None)
-            capabilities = node_copy.get("capabilities")
-            if (capabilities is None or capabilities == []) and isinstance(
-                node_copy.get("type"), str
-            ):
-                # Imported lazily so pipeline serialization can use this module
-                # without creating a module import cycle.
-                from brokoli.pipeline import _capabilities_for
-
-                node_copy["capabilities"] = sorted(
-                    _capabilities_for(node_copy["type"]), key=_sort_key
-                )
-            elif isinstance(capabilities, list):
-                node_copy["capabilities"] = sorted(capabilities, key=_sort_key)
-            nodes[index] = node_copy
-        nodes.sort(key=lambda node: _mapping_sort_key(node, ("id",)))
+        normalized["nodes"] = sorted(
+            (_normalize_node(node) for node in nodes if isinstance(node, Mapping)),
+            key=lambda node: _mapping_sort_key(node, ("id",)),
+        )
 
     for field in ("tags", "depends_on"):
         values = normalized.get(field)
