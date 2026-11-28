@@ -8,6 +8,7 @@ from brokoli.pipeline import (
     ArtifactRef,
     DatasetRef,
     CollectionRef,
+    group,
 )
 from brokoli.taskbundle import TaskBundle
 from brokoli.mapping import Map
@@ -144,6 +145,7 @@ __all__ = [
     # Decorators
     "task",
     "Map",
+    "group",
     "condition",
     "source",
     "sink",

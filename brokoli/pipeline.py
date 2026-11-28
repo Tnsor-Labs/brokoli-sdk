@@ -12,7 +12,7 @@ import inspect
 import json
 import re
 import textwrap
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from brokoli.exceptions import PipelineError
 from brokoli.mapping import Map, prepare_map
@@ -36,6 +36,11 @@ CONDITIONAL_ROUTING_IR_VERSION: str = "2.1"
 # inferred or explicit interface, or an inferred pipeline parameter,
 # actually exists -- an untyped pipeline still compiles to 2.0/2.1.
 TASK_INTERFACE_IR_VERSION: str = "2.2"
+# First IR version that may carry a ``group`` node -- a named subgraph with
+# a ``map`` block, run once per item of its upstream collection and combined
+# by ``collect`` (ADR-050 phase 2). Only emitted when the pipeline actually
+# holds a group; a pipeline without one still compiles to 2.0/2.1/2.2.
+MAPPED_GROUPS_IR_VERSION: str = "2.3"
 
 # --- Capability model ---
 #
@@ -78,6 +83,11 @@ NODE_TYPE_CAPABILITIES: dict[str, list[str]] = {
     "contract_gate": ["compute"],
     # A wait passes its input through once its condition holds.
     "wait": ["compute", "dataset-output"],
+    # A mapped group computes a dataset (its per-item outputs combined by
+    # collect), so it carries the same role as any other compute+output node
+    # (ADR-050 phase 2). "none" still yields a dataset-output port (empty),
+    # so the capability holds regardless of collect mode.
+    "group": ["compute", "dataset-output"],
 }
 DEFAULT_CAPABILITIES: tuple[str, ...] = ("compute",)
 
@@ -1998,6 +2008,17 @@ class Pipeline:
         self._branches: dict[str, dict[str, list[str]]] = {}
         self._node_order: list[str] = []
         self._node_id_counters: dict[str, int] = {}
+        # Mapped groups (ADR-050 phase 2, IR 2.3). Nodes and edges are stored
+        # flat in _nodes/_edges so all the usual wiring, ref validation and
+        # conditional-routing checks apply to inner nodes unchanged; group
+        # membership is recorded here and the subgraph is nested back into its
+        # group node only at serialize time (to_json). _group_stack is the
+        # groups currently open (innermost last) during a `with group(...)`
+        # block; _node_group maps a node to its immediate enclosing group;
+        # _group_collect holds each group node's collect mode.
+        self._group_stack: list[str] = []
+        self._node_group: dict[str, str] = {}
+        self._group_collect: dict[str, str] = {}
         # Task bundles attached by @task(package="bundle") (ADR-031): the
         # content-addressed project archives the code nodes reference by
         # digest. They ride sideband -- to_json() stays pure IR -- and are
@@ -2081,6 +2102,8 @@ class Pipeline:
         }
         counters_before = dict(self._node_id_counters)
         parameters_before = dict(self._parameters)
+        node_group_before = dict(self._node_group)
+        group_collect_before = dict(self._group_collect)
         cached_refs: list[tuple[Any, Optional[NodeRef]]] = []
 
         def capture(item: Any) -> None:
@@ -2100,9 +2123,81 @@ class Pipeline:
             self._branches = branches_before
             self._node_id_counters = counters_before
             self._parameters = parameters_before
+            self._node_group = node_group_before
+            self._group_collect = group_collect_before
             for item, cached_ref in cached_refs:
                 item._auto_ref = cached_ref
             raise
+
+    def _snapshot_graph(self) -> dict[str, Any]:
+        """A deep-enough copy of the graph state a ``group(...)`` block may
+        touch, so an exception inside the block leaves the pipeline as it was."""
+        return {
+            "nodes": dict(self._nodes),
+            "edges": list(self._edges),
+            "order": list(self._node_order),
+            "branches": {
+                nid: {b: list(dests) for b, dests in bm.items()}
+                for nid, bm in self._branches.items()
+            },
+            "counters": dict(self._node_id_counters),
+            "parameters": dict(self._parameters),
+            "node_group": dict(self._node_group),
+            "group_collect": dict(self._group_collect),
+            "group_stack": list(self._group_stack),
+        }
+
+    def _restore_graph(self, snap: dict[str, Any]) -> None:
+        self._nodes = snap["nodes"]
+        self._edges = snap["edges"]
+        self._node_order = snap["order"]
+        self._branches = snap["branches"]
+        self._node_id_counters = snap["counters"]
+        self._parameters = snap["parameters"]
+        self._node_group = snap["node_group"]
+        self._group_collect = snap["group_collect"]
+        self._group_stack = snap["group_stack"]
+
+    def _finalize_group(self, gid: str, over_refs: list["NodeRef"]) -> None:
+        """Validate a just-closed group's subgraph and wire its single input.
+
+        Mirrors core's structural rules (engine/group.go) so the author sees
+        the fault locally rather than at deploy: at least one inner node, and
+        exactly one entry (no inner input) and one terminal (its output). The
+        group's incoming edge(s) -- from the collection(s) its map ranges over
+        -- are added now, once the subgraph is known good."""
+        name = self._nodes[gid]["name"]
+        members = [nid for nid in self._node_order if self._node_group.get(nid) == gid]
+        if not members:
+            raise PipelineError(
+                f"Group {name!r} has no inner nodes; a group needs at least one. "
+                "Build the group's body inside the `with group(...)` block."
+            )
+        incoming = dict.fromkeys(members, 0)
+        outgoing = dict.fromkeys(members, 0)
+        for from_id, to_id, _cond in self._edges:
+            if self._node_group.get(from_id) == gid and self._node_group.get(to_id) == gid:
+                outgoing[from_id] += 1
+                incoming[to_id] += 1
+        entries = [nid for nid in members if incoming[nid] == 0]
+        terminals = [nid for nid in members if outgoing[nid] == 0]
+        if len(entries) != 1:
+            names = ", ".join(repr(self._nodes[n]["name"]) for n in entries) or "none"
+            raise PipelineError(
+                f"Group {name!r} must have exactly one entry node -- one inner node "
+                f"with no input from inside the group, which receives each item -- "
+                f"got {len(entries)} ({names}). Wire the group's inner nodes into a "
+                "single chain so one is the entry."
+            )
+        if len(terminals) != 1:
+            names = ", ".join(repr(self._nodes[n]["name"]) for n in terminals) or "none"
+            raise PipelineError(
+                f"Group {name!r} must have exactly one terminal node -- the inner "
+                f"node whose output becomes the group's output -- got {len(terminals)} "
+                f"({names}). Converge the group's inner nodes to a single output."
+            )
+        for ref in over_refs:
+            self._add_edge(ref.node_id, gid)
 
     def _allocate_node_id(self, name: str, node_key: Optional[str] = None) -> str:
         """Allocate a deterministic logical node ID owned by this pipeline."""
@@ -2148,6 +2243,15 @@ class Pipeline:
             raise PipelineError(
                 f"Duplicate node id {node_id!r} (name={name!r}). Each node must have a unique id."
             )
+        # Inside a group, only a nested group may map: core refuses a non-group
+        # inner node that carries a map block (ADR-050 phase 2). Refuse it here
+        # with a message that names the node, rather than let the server do it.
+        if self._group_stack and node_type != "group" and "map" in config:
+            raise PipelineError(
+                f"Node {name!r} is inside a group and carries a map=... block, "
+                "but only a nested group maps in this version. Map the whole "
+                "group instead, or move this node out of the group."
+            )
         self._nodes[node_id] = {
             "id": node_id,
             "type": node_type,
@@ -2159,11 +2263,31 @@ class Pipeline:
             "interface": interface,
         }
         self._node_order.append(node_id)
+        # Record which group (if any) this node belongs to, so to_json() can
+        # nest it back under its group node. A group node opened right now is
+        # itself a member of whatever group encloses it (nesting), which is the
+        # current top of the stack -- the new group's id is pushed only after
+        # this call returns, so the group node is tagged with its parent here.
+        if self._group_stack:
+            self._node_group[node_id] = self._group_stack[-1]
         _record_node_site(node_id)
 
     def _add_edge(self, from_id: str, to_id: str, condition: bool | None = None) -> None:
         if from_id not in self._nodes or to_id not in self._nodes:
             raise PipelineError("Nodes from different pipelines cannot be connected.")
+        # An edge must stay within one scope: both endpoints in the same group,
+        # or both at the top level. A group node is the only boundary between a
+        # subgraph and the rest -- its inner nodes reach the outside only
+        # through it, never by a direct edge (ADR-050 phase 2). This catches
+        # wiring a node inside a group to one outside it, which would otherwise
+        # produce an edge the server cannot place in either graph.
+        if self._node_group.get(from_id) != self._node_group.get(to_id):
+            raise PipelineError(
+                f"Edge {from_id!r} -> {to_id!r} crosses a group boundary. A node "
+                "inside a group connects to the outside only through the group "
+                "itself; wire the group's input (its map=over=...) and consume "
+                "the group's output downstream of the group."
+            )
         if condition is not None and type(condition) is not bool:
             raise PipelineError("Edge condition must be true, false, or omitted.")
         for existing_from, existing_to, existing_condition in self._edges:
@@ -2183,8 +2307,24 @@ class Pipeline:
         self._validate_conditional_routing()
         positions = self._auto_layout()
 
-        nodes: list[dict[str, Any]] = []
+        # Group members (ADR-050 phase 2) are stored flat; nest them back under
+        # their group node here, so only top-level nodes appear at the top and
+        # each group carries its own nodes/edges/collect. Membership is one
+        # level deep, so a recursive serializer handles nesting.
+        members_by_group: dict[str, list[str]] = {}
         for nid in self._node_order:
+            gid = self._node_group.get(nid)
+            if gid is not None:
+                members_by_group.setdefault(gid, []).append(nid)
+
+        def _edge_dict(from_id: str, to_id: str, condition: bool | None) -> dict[str, Any]:
+            return {
+                "from": from_id,
+                "to": to_id,
+                **({} if condition is None else {"condition": condition}),
+            }
+
+        def _serialize(nid: str) -> dict[str, Any]:
             node = self._nodes[nid]
             node_data: dict[str, Any] = {
                 "id": node["id"],
@@ -2197,11 +2337,24 @@ class Pipeline:
             if node.get("interface") is not None:
                 node_data["interface"] = copy.deepcopy(node["interface"])
             self._annotate_schema_hint(node, node_data)
-            nodes.append(node_data)
+            if node["type"] == "group":
+                node_data["collect"] = self._group_collect.get(nid, "union")
+                node_data["nodes"] = [_serialize(c) for c in members_by_group.get(nid, [])]
+                node_data["edges"] = [
+                    _edge_dict(f, t, c)
+                    for f, t, c in self._edges
+                    if self._node_group.get(f) == nid and self._node_group.get(t) == nid
+                ]
+            return node_data
+
+        nodes: list[dict[str, Any]] = [
+            _serialize(nid) for nid in self._node_order if self._node_group.get(nid) is None
+        ]
 
         uses_task_interfaces = bool(self._parameters) or any(
             n.get("interface") is not None for n in self._nodes.values()
         )
+        has_group = any(n["type"] == "group" for n in self._nodes.values())
         result: dict[str, Any] = {
             "pipeline_id": self.pipeline_id,
             "name": self.name,
@@ -2209,7 +2362,9 @@ class Pipeline:
             "schedule": self.schedule,
             "enabled": True,
             "ir_version": (
-                TASK_INTERFACE_IR_VERSION
+                MAPPED_GROUPS_IR_VERSION
+                if has_group
+                else TASK_INTERFACE_IR_VERSION
                 if uses_task_interfaces
                 else CONDITIONAL_ROUTING_IR_VERSION
                 if any(condition is not None for _, _, condition in self._edges)
@@ -2217,12 +2372,9 @@ class Pipeline:
             ),
             "nodes": nodes,
             "edges": [
-                {
-                    "from": from_id,
-                    "to": to_id,
-                    **({} if condition is None else {"condition": condition}),
-                }
+                _edge_dict(from_id, to_id, condition)
                 for from_id, to_id, condition in self._edges
+                if self._node_group.get(from_id) is None and self._node_group.get(to_id) is None
             ],
             "tags": self.tags,
             "depends_on": self.depends_on,
@@ -2445,3 +2597,100 @@ class Pipeline:
                 }
 
         return positions
+
+
+# -- Mapped groups (ADR-050 phase 2, IR 2.3) ------------------------------
+
+_COLLECT_MODES: tuple[str, ...] = ("union", "none", "list")
+
+
+@contextmanager
+def group(
+    name: str,
+    *,
+    map: "Map",
+    collect: str = "union",
+    node_key: Optional[str] = None,
+) -> "Iterator[NodeRef]":
+    """A named subgraph, run once per item of an upstream collection.
+
+    Use it as a context manager inside a ``with Pipeline(...)`` block. Every
+    node created in the body belongs to the group; the group runs that whole
+    subgraph once per item of the collection its ``map`` ranges over, and
+    ``collect`` says how the per-item outputs become the group's one output.
+    The group reference the ``with`` binds is an ordinary node downstream::
+
+        with Pipeline("per-table-load") as p:
+            tables = source_db("List tables", query="...", conn_id="warehouse")
+            with group(
+                "Per table",
+                map=Map(over=tables, key="table_name", on_item_failure="continue"),
+                collect="union",
+            ) as per_table:
+                read = code("Read one table", script="output_data = {...}")
+                transform("Shape", input=read, rules=[])
+            sink_db("Write all", input=per_table, table="all_tables", conn_id="warehouse")
+
+    The subgraph must have exactly one entry node (one inner node with no
+    input from inside the group; it receives each item) and one terminal node
+    (whose output is the group's output). An inner node reaches the outside
+    only through the group itself -- wiring one directly to a node outside the
+    group is an error.
+
+    Args:
+        name: The group's display name.
+        map: A :class:`~brokoli.Map` naming the collection(s) to map over.
+            Required: a group that does not map is not supported in this
+            version.
+        collect: How the per-item outputs combine. ``"union"`` (the default)
+            concatenates them into one dataset; ``"none"`` discards them (a
+            group run for its sinks' side effects); ``"list"`` makes one row
+            per item so a later group can map over the result again.
+        node_key: An explicit, stable id for the group node (otherwise one is
+            derived from the name).
+
+    A server that does not advertise the ``mapped-groups`` execution feature
+    refuses the deploy -- a server without the group executor would otherwise
+    ignore the subgraph and run a wrong pipeline.
+    """
+    pipeline = Pipeline.current()
+    if pipeline is None:
+        raise PipelineError("group(...) must be used inside a `with Pipeline(...)` block.")
+    if not isinstance(name, str) or not name.strip():
+        raise PipelineError("group(name=...) needs a non-empty name.")
+    if collect not in _COLLECT_MODES:
+        raise PipelineError(
+            f"group(collect=...) must be one of {', '.join(_COLLECT_MODES)}, got {collect!r}"
+        )
+    if map is None:
+        raise PipelineError(
+            "group(map=...) is required: a group that does not map is not "
+            "supported in this version."
+        )
+    if not isinstance(map, Map):
+        raise PipelineError(f"group(map=...) must be a brokoli.Map, got {type(map).__name__}")
+
+    # The collection(s) the group ranges over must be real nodes reachable in
+    # the current scope; validate before opening so a bad over fails early.
+    over_refs = map.refs()
+    pipeline._validate_refs(over_refs)
+
+    gid = pipeline._allocate_node_id(name, node_key)
+    config: dict[str, Any] = {"map": map.to_config()}
+
+    snapshot = pipeline._snapshot_graph()
+    pipeline._add_node(gid, "group", name, config, capabilities=_capabilities_for("group"))
+    pipeline._group_collect[gid] = collect
+    pipeline._group_stack.append(gid)
+    try:
+        yield NodeRef(gid, pipeline)
+    except BaseException:
+        pipeline._restore_graph(snapshot)
+        raise
+    finally:
+        if pipeline._group_stack and pipeline._group_stack[-1] == gid:
+            pipeline._group_stack.pop()
+
+    # Normal completion: the body ran without error. Validate the subgraph and
+    # wire the group's single input edge(s) from the mapped collection(s).
+    pipeline._finalize_group(gid, over_refs)
