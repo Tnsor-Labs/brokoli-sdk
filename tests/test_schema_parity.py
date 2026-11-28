@@ -34,6 +34,7 @@ from brokoli import (
 _FIXTURES = Path(__file__).parent / "fixtures"
 SCHEMA = json.loads((_FIXTURES / "pipeline-ir-2.1.json").read_text())
 SCHEMA_2_2 = json.loads((_FIXTURES / "pipeline-ir-2.2.json").read_text())
+SCHEMA_2_3 = json.loads((_FIXTURES / "pipeline-ir-2.3.json").read_text())
 TASK_INTERFACE = json.loads((_FIXTURES / "task-interface-v1.json").read_text())
 
 MODULE_CONSTANT = 500
@@ -55,6 +56,16 @@ def _validate_2_2(payload):
         TASK_INTERFACE["$id"], Resource.from_contents(TASK_INTERFACE)
     )
     jsonschema.Draft202012Validator(SCHEMA_2_2, registry=registry).validate(payload)
+
+
+def _validate_2_3(payload):
+    from referencing import Registry, Resource
+
+    # 2.3 carries 2.2's task-interface $ref forward.
+    registry = Registry().with_resource(
+        TASK_INTERFACE["$id"], Resource.from_contents(TASK_INTERFACE)
+    )
+    jsonschema.Draft202012Validator(SCHEMA_2_3, registry=registry).validate(payload)
 
 
 def test_simple_pipeline_validates():
@@ -181,3 +192,45 @@ def test_task_interface_pipeline_validates_against_2_2():
     _validate_2_2(payload)
     with pytest.raises(jsonschema.ValidationError):
         _validate(payload)  # 2.1 has no interface/parameters
+
+
+def test_mapped_group_validates_against_2_3():
+    from brokoli import Map, code, group, sink_db, source_db
+
+    with Pipeline("per-table", pipeline_id="per-table") as p:
+        tables = source_db("List tables", query="SELECT 1", conn_id="warehouse")
+        with group(
+            "Per table",
+            map=Map(over=tables, key="table_name", on_item_failure="continue"),
+            collect="union",
+        ) as per_table:
+            read = code("Read", script='output_data = {"columns": ["c"], "rows": rows}')
+            transform("Shape", input=read, rules=[])
+        sink_db("Write", input=per_table, table="t", conn_id="warehouse")
+
+    payload = p.to_json()
+    assert payload["ir_version"] == "2.3"
+    _validate_2_3(payload)
+    # A group node is not expressible in 2.1/2.2 (no nodes/edges/collect on a
+    # node), so the earlier schemas must reject it -- proof the version bump is
+    # load-bearing, not cosmetic.
+    with pytest.raises(jsonschema.ValidationError):
+        _validate(payload)
+    with pytest.raises(jsonschema.ValidationError):
+        _validate_2_2(payload)
+
+
+def test_nested_mapped_group_validates_against_2_3():
+    from brokoli import Map, code, group, sink_db, source_db
+
+    with Pipeline("nested", pipeline_id="nested") as p:
+        tables = source_db("Tables", query="SELECT 1", conn_id="w")
+        with group("Per table", map=Map(over=tables, key="tn"), collect="list") as per_table:
+            parts = source_db("Parts", query="SELECT 1", conn_id="w")
+            with group("Per part", map=Map(over=parts, key="pn"), collect="union"):
+                code("Load", script='output_data = {"columns": [], "rows": rows}')
+        sink_db("Sink", input=per_table, table="t", conn_id="w")
+
+    payload = p.to_json()
+    assert payload["ir_version"] == "2.3"
+    _validate_2_3(payload)

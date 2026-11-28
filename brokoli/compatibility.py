@@ -44,6 +44,10 @@ RUNTIME_EXISTENCE_FEATURES = frozenset(
         # mapping, and would ignore a `map` block and run the node once
         # over its whole input.
         "node-map",
+        # ADR-050 phase 2: likewise predates the group executor -- it would
+        # not run a group's subgraph at all, so a group pipeline must fail
+        # closed rather than pass preflight against it.
+        "mapped-groups",
     }
 )
 
@@ -257,88 +261,106 @@ def node_type_problems(payload: dict[str, Any], capabilities: ServerCapabilities
 def required_execution_features(payload: dict[str, Any]) -> set[str]:
     """The execution features a compiled pipeline payload depends on."""
     required: set[str] = set()
-    for edge in payload.get("edges") or []:
-        if not isinstance(edge, dict):
-            continue
-        if "condition" in edge:
-            required.add("conditional-routing")
-        # ADR-032 named ports. No released server advertises
-        # task-ports-v1 yet, so this gate refuses every port-carrying
-        # deploy -- deliberately. The alternative is worse: a server that
-        # doesn't understand from_port/to_port drops them and silently
-        # routes the edge as if it were unported, which is a wrong
-        # pipeline rather than a refused one.
-        if edge.get("from_port") or edge.get("to_port"):
-            required.add("task-ports-v1")
-    for node in payload.get("nodes") or []:
-        if not isinstance(node, dict):
-            continue
-        config = node.get("config") or {}
-        node_type = node.get("type")
-        # ADR-032 rollout step 3 (#439): a node's "interface" field is
-        # additive IR, but a server that doesn't advertise
-        # task-interface-v1 may not even accept IR 2.2 -- refuse at
-        # deploy preflight rather than let a strict decoder 400 it.
-        if node.get("interface") is not None:
-            required.add("task-interface-v1")
-        if "expansion" in config:
-            required.add("dynamic-expansion")
-        if "map" in config:
-            # ADR-050: a server without node-map ignores the block and runs
-            # the node once over its whole input -- a green run and a wrong
-            # answer -- so this is a deploy refusal, never a warning.
-            required.add("node-map")
-        if node_type == "task":
-            # ADR-033: a "task" node is a whole separate execution path
-            # (task-bundle/v2 payload dispatched over the
-            # brokoli.task-runtime/v1 protocol), not a variant of "code".
-            # A server that predates it doesn't merely lack a feature --
-            # its validator hard-refuses any pipeline containing one, so
-            # without this gate the deploy fails server-side with a
-            # structural error that says nothing about which server
-            # capability was missing. task_bundle is mandatory on a task
-            # node (optional on a code node), so both features always
-            # travel together.
-            required.add("task-runtime-v1")
-            required.add("task-bundle-v2")
-        if node_type == "union":
-            required.add("union")
-        elif node_type == "dataset_map":
-            required.add("dataset-map")
-        elif node_type == "dataset_filter":
-            required.add("dataset-filter")
-        # Plain pagination long predates feature advertising; the
-        # execution policy block is what implies checkpoint/page-retry
-        # runtime semantics.
-        if node_type == "source_api" and "execution" in config and "pagination" in config:
-            required.add("pagination-checkpoints")
-        # emit()/begin_emit() are wrapper contract features (ADR-029,
-        # core "code-streaming-emit"): on a server whose wrapper
-        # predates them the names simply don't exist and the script
-        # fails at run time -- or worse, a bare emit falls back to
-        # passthrough. A string scan is the same pragmatic test the
-        # pagination gate uses: false positives (the word in a comment)
-        # only ever refuse a deploy against a server too old to run
-        # modern scripts anyway.
-        if node_type == "code":
-            # code(language="typescript") is accepted by this SDK, but the
-            # server advertises code-typescript only when a Node runtime
-            # actually resolved at startup (it is not in the static
-            # feature list). Without this gate a Python-authored
-            # TypeScript node deploys against a server with no Node and
-            # fails at run time. The TypeScript SDK has always gated
-            # this; the Python SDK can author the same node and did not.
-            if config.get("language") == "typescript":
-                required.add("code-typescript")
-            script = config.get("script") or ""
-            if "emit(" in script or "begin_emit(" in script:
-                required.add("code-streaming-emit")
-            if "task_bundle" in config:
-                # ADR-031: task bundles need a server that can resolve and
-                # mount them; an older server (no such feature) must be
-                # refused at deploy, never reach "deployed, then fails at
-                # run time".
-                required.add("task-bundles")
+
+    def _scan(nodes: Any, edges: Any) -> None:
+        """Collect the features a set of nodes/edges needs. Recurses into a
+        group's inner subgraph (ADR-050 phase 2), so an inner task, an inner
+        conditional edge or a nested group are gated like any top-level one."""
+        for edge in edges or []:
+            if not isinstance(edge, dict):
+                continue
+            if "condition" in edge:
+                required.add("conditional-routing")
+            # ADR-032 named ports. No released server advertises
+            # task-ports-v1 yet, so this gate refuses every port-carrying
+            # deploy -- deliberately. The alternative is worse: a server that
+            # doesn't understand from_port/to_port drops them and silently
+            # routes the edge as if it were unported, which is a wrong
+            # pipeline rather than a refused one.
+            if edge.get("from_port") or edge.get("to_port"):
+                required.add("task-ports-v1")
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            config = node.get("config") or {}
+            node_type = node.get("type")
+            # ADR-032 rollout step 3 (#439): a node's "interface" field is
+            # additive IR, but a server that doesn't advertise
+            # task-interface-v1 may not even accept IR 2.2 -- refuse at
+            # deploy preflight rather than let a strict decoder 400 it.
+            if node.get("interface") is not None:
+                required.add("task-interface-v1")
+            if "expansion" in config:
+                required.add("dynamic-expansion")
+            if node_type == "group":
+                # ADR-050 phase 2: a group's own map block is run by the group
+                # executor, advertised as "mapped-groups" -- not the
+                # single-node "node-map" feature -- so a group requires
+                # mapped-groups even though its config carries "map". Accepting
+                # ir_version 2.3 does not imply the executor runs, exactly as
+                # 2.2 acceptance does not imply task-interface routing, so this
+                # is a deploy refusal against a server that lacks it. The inner
+                # subgraph can need features of its own, so scan it too.
+                required.add("mapped-groups")
+                _scan(node.get("nodes"), node.get("edges"))
+            elif "map" in config:
+                # ADR-050: a server without node-map ignores the block and runs
+                # the node once over its whole input -- a green run and a wrong
+                # answer -- so this is a deploy refusal, never a warning.
+                required.add("node-map")
+            if node_type == "task":
+                # ADR-033: a "task" node is a whole separate execution path
+                # (task-bundle/v2 payload dispatched over the
+                # brokoli.task-runtime/v1 protocol), not a variant of "code".
+                # A server that predates it doesn't merely lack a feature --
+                # its validator hard-refuses any pipeline containing one, so
+                # without this gate the deploy fails server-side with a
+                # structural error that says nothing about which server
+                # capability was missing. task_bundle is mandatory on a task
+                # node (optional on a code node), so both features always
+                # travel together.
+                required.add("task-runtime-v1")
+                required.add("task-bundle-v2")
+            if node_type == "union":
+                required.add("union")
+            elif node_type == "dataset_map":
+                required.add("dataset-map")
+            elif node_type == "dataset_filter":
+                required.add("dataset-filter")
+            # Plain pagination long predates feature advertising; the
+            # execution policy block is what implies checkpoint/page-retry
+            # runtime semantics.
+            if node_type == "source_api" and "execution" in config and "pagination" in config:
+                required.add("pagination-checkpoints")
+            # emit()/begin_emit() are wrapper contract features (ADR-029,
+            # core "code-streaming-emit"): on a server whose wrapper
+            # predates them the names simply don't exist and the script
+            # fails at run time -- or worse, a bare emit falls back to
+            # passthrough. A string scan is the same pragmatic test the
+            # pagination gate uses: false positives (the word in a comment)
+            # only ever refuse a deploy against a server too old to run
+            # modern scripts anyway.
+            if node_type == "code":
+                # code(language="typescript") is accepted by this SDK, but the
+                # server advertises code-typescript only when a Node runtime
+                # actually resolved at startup (it is not in the static
+                # feature list). Without this gate a Python-authored
+                # TypeScript node deploys against a server with no Node and
+                # fails at run time. The TypeScript SDK has always gated
+                # this; the Python SDK can author the same node and did not.
+                if config.get("language") == "typescript":
+                    required.add("code-typescript")
+                script = config.get("script") or ""
+                if "emit(" in script or "begin_emit(" in script:
+                    required.add("code-streaming-emit")
+                if "task_bundle" in config:
+                    # ADR-031: task bundles need a server that can resolve and
+                    # mount them; an older server (no such feature) must be
+                    # refused at deploy, never reach "deployed, then fails at
+                    # run time".
+                    required.add("task-bundles")
+
+    _scan(payload.get("nodes"), payload.get("edges"))
     # catch_up compiles to the pipeline-level catchup field (ADR-028):
     # per-interval catch-up only exists on servers that advertise
     # data_intervals, and older strict decoders reject the field outright.

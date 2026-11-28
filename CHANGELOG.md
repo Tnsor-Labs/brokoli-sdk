@@ -9,6 +9,33 @@ those are called out explicitly.
 
 ### Added
 
+- **`group(...)`: map a whole subgraph over a collection.** A new context
+  manager builds a named subgraph that runs once per item of the collection
+  its `map` ranges over (ADR-050 phase 2, IR 2.3). Nodes created in its body
+  are the group's subgraph; the reference the `with` binds is an ordinary
+  node downstream:
+
+  ```python
+  with group("Per table", map=Map(over=tables, key="table_name"),
+             collect="union") as per_table:
+      read = code("Read one table", script="...")
+      transform("Shape", input=read, rules=[])
+  sink_db("Write all", input=per_table, table="all_tables", conn_id="warehouse")
+  ```
+
+  `collect` says how the per-item outputs combine: `"union"` (one dataset,
+  the default), `"none"` (discard them, for a group run for its sinks) or
+  `"list"` (one row per item, so a later group can map over the result).
+  Groups nest, and a `condition_node(...)` inside a group routes each item on
+  its own. The subgraph must have exactly one entry node (its per-item input)
+  and one terminal (its output); the SDK refuses a malformed group — no inner
+  nodes, two entries or terminals, an inner non-group carrying its own `map`,
+  or an edge wired across the group boundary — with a message naming the
+  fault, before deploy. A pipeline that opens a group compiles to IR 2.3, and
+  deploy refuses a server that does not advertise the `mapped-groups`
+  execution feature (a server without the group executor would ignore the
+  subgraph and run a wrong pipeline).
+
 - **`map=Map(...)`: run a node once per item.** `code()`, `source_db()`,
   `source_api()` and a `@task` call take `map=Map(over=..., key=...,
   max_items=..., max_parallel=..., on_item_failure=...)`, compiled to the
